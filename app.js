@@ -85,6 +85,10 @@
     els.canvas.addEventListener("mousemove", onCanvasMouseMove);
     els.canvas.addEventListener("mouseup", onCanvasMouseUp);
     els.canvas.addEventListener("mouseleave", onCanvasMouseLeave);
+    els.canvas.addEventListener("touchstart", onCanvasMouseDown, { passive: false });
+    els.canvas.addEventListener("touchmove", onCanvasMouseMove, { passive: false });
+    els.canvas.addEventListener("touchend", onCanvasMouseUp, { passive: false });
+    els.canvas.addEventListener("touchcancel", onCanvasMouseLeave, { passive: false });
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -251,9 +255,10 @@
     const rect = els.canvas.getBoundingClientRect();
     const scaleX = els.canvas.width / rect.width;
     const scaleY = els.canvas.height / rect.height;
+    const point = e.touches ? (e.touches[0] || e.changedTouches[0]) : e;
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY
+      x: (point.clientX - rect.left) * scaleX,
+      y: (point.clientY - rect.top) * scaleY
     };
   }
 
