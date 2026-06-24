@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
   "use strict";
 
   const STORAGE_KEY = "context-vocab-items-v1";
@@ -539,7 +539,11 @@
   }
 
   function shouldMerge(a, b) {
-    const verticalClose = Math.abs(centerY(a) - centerY(b)) < Math.max(a.height, b.height) * 0.9;
+    // 同一行判定: 垂直に実際に重なっている割合で判断（中心距離ではなく重なり率）
+    // 同一行のハイライトは垂直重なり率が高く、異なる行では重なりがほぼゼロになる
+    const vertOverlap = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+    const minH = Math.min(a.height, b.height);
+    const verticalClose = minH > 0 && vertOverlap / minH >= 0.4;
     const horizontalClose = Math.abs(centerX(a) - centerX(b)) < 42 || overlaps(a, b) > 0;
     return verticalClose && horizontalClose;
   }
