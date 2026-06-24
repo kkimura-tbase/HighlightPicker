@@ -475,7 +475,7 @@
         const rectWidth = maxX - minX + 1;
         const rectHeight = maxY - minY + 1;
         if (pixels >= options.minPixels && rectWidth >= 8 && rectHeight >= 4) {
-          rects.push(padRect({ x: minX, y: minY, width: rectWidth, height: rectHeight }, width, height, 8));
+          rects.push(padRect({ x: minX, y: minY, width: rectWidth, height: rectHeight }, width, height, 2));
         }
       }
     }
@@ -539,13 +539,12 @@
   }
 
   function shouldMerge(a, b) {
-    // 同一行判定: 垂直に実際に重なっている割合で判断（中心距離ではなく重なり率）
-    // 同一行のハイライトは垂直重なり率が高く、異なる行では重なりがほぼゼロになる
+    // 同一行判定: 垂直方向に40%以上重なる（同一行のハイライトのみマージ）
     const vertOverlap = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
     const minH = Math.min(a.height, b.height);
-    const verticalClose = minH > 0 && vertOverlap / minH >= 0.4;
-    const horizontalClose = Math.abs(centerX(a) - centerX(b)) < 42 || overlaps(a, b) > 0;
-    return verticalClose && horizontalClose;
+    const sameLine = minH > 0 && vertOverlap / minH >= 0.4;
+    // 水平方向: 実際に重なっているときのみマージ（隣接する別ハイライトの誤結合を防ぐ）
+    return sameLine && overlaps(a, b) > 0;
   }
 
   function centerX(rect) {
@@ -585,10 +584,11 @@
       const sorted = rectWords.sort((a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x);
       const text = cleanWord(sorted.map((word) => word.text).join(" "));
       if (!text) return;
-      
-      // 最初�E一語をスチE�E�E�E��E�E�E�ングして抽出語とする
-      const firstWord = text.split(" ")[0];
-      const baseWord = lemmatize(firstWord);
+
+      // 複数語が1つのハイライト内にある場合は連語としてそのまま保持（例: get away）
+      // 単語1語の場合のみ原形に変換する
+      const wordTokens = text.split(" ");
+      const baseWord = wordTokens.length === 1 ? lemmatize(text) : text;
       
       const context = findBestContext(text, sorted, lines, fullText);
       found.push({
