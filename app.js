@@ -662,11 +662,15 @@
   // 日本語の「意味」フィールドが文章になっていないか判定する
   function isSentenceLike(text) {
     if (!text) return false;
-    return /。/.test(text) || /^（/.test(text) || text.length > 40;
+    if (/。.+/.test(text)) return true;                    // 句点の後にさらに文字あり → 確実に文章
+    if (text.length > 30 && /。/.test(text)) return true;  // 長い文字列中の句点 → 文章
+    if (text.length > 50 && /、/.test(text)) return true;  // 長い＋読点あり → 文章
+    return false;
   }
 
   // OCR行の品質チェック（記号まみれのゴミ行を除外する）
-  function isCleanLine(text) {    const t = text.trim();
+  function isCleanLine(text) {
+    const t = text.trim();
     if (!t || t.length < 3) return false;
     if (!/[a-zA-Z]{2,}/.test(t)) return false;
     const garbage = (t.match(/[|\\^~`<>{}\[\]@#\$%*=]/g) || []).length;
@@ -737,8 +741,7 @@
       "mice": "mouse",
       "teeth": "tooth",
       "feet": "foot",
-      "people": "person",
-      "leaves": "leaf" // could be verb leave, but noun is common too
+      "people": "person"
     };
 
     if (irregulars[w]) return irregulars[w];
@@ -915,7 +918,7 @@
     detectedResults = detectedResults.map((item) => {
       const enriched = enrichedById.get(item.id) || {};
       const rawMeaning = enriched.meaning || item.meaning || "";
-      // 文章っぽい意味（「（」始まり・「。」含む・40文字超）はゴミとして除外する
+      // 文章っぽい意味（句点あり、または50文字超かつ読点あり）はゴミとして除外する
       const meaning = isSentenceLike(rawMeaning) ? "" : rawMeaning;
       return {
         ...item,
