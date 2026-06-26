@@ -573,13 +573,7 @@
     const found = [];
 
     highlightRects.forEach((rect) => {
-      const MIN_OVERLAP_RATIO = 0.3;
-      const rectWords = words.filter((word) => {
-        if (isInside(word.bbox, rect)) return true;
-        const wordArea = word.bbox.width * word.bbox.height;
-        if (wordArea <= 0) return false;
-        return overlaps(word.bbox, rect) / wordArea >= MIN_OVERLAP_RATIO;
-      });
+      const rectWords = words.filter((word) => isInside(word.bbox, rect));
       if (!rectWords.length) return;
       const sorted = rectWords.sort((a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x);
       const text = cleanWord(sorted.map((word) => word.text).join(" "));
