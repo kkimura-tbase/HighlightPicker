@@ -659,9 +659,14 @@
       .trim();
   }
 
+  // 日本語の「意味」フィールドが文章になっていないか判定する
+  function isSentenceLike(text) {
+    if (!text) return false;
+    return /。/.test(text) || /^（/.test(text) || text.length > 40;
+  }
+
   // OCR行の品質チェック（記号まみれのゴミ行を除外する）
-  function isCleanLine(text) {
-    const t = text.trim();
+  function isCleanLine(text) {    const t = text.trim();
     if (!t || t.length < 3) return false;
     if (!/[a-zA-Z]{2,}/.test(t)) return false;
     const garbage = (t.match(/[|\\^~`<>{}\[\]@#\$%*=]/g) || []).length;
@@ -909,11 +914,14 @@
     const enrichedById = new Map((data.items || []).map((item) => [item.id, item]));
     detectedResults = detectedResults.map((item) => {
       const enriched = enrichedById.get(item.id) || {};
+      const rawMeaning = enriched.meaning || item.meaning || "";
+      // 文章っぽい意味（「（」始まり・「。」含む・40文字超）はゴミとして除外する
+      const meaning = isSentenceLike(rawMeaning) ? "" : rawMeaning;
       return {
         ...item,
         pos: enriched.pos || item.pos || "",
         contextJa: enriched.contextJa || item.contextJa || "",
-        meaning: enriched.meaning || item.meaning || ""
+        meaning
       };
     });
   }
