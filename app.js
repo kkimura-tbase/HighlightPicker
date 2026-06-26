@@ -565,7 +565,7 @@
 
   function buildResults(data, highlightRects, zones) {
     const words = normalizeWords(data);
-    const allLines = normalizeLines(data);
+    const allLines = normalizeLines(data).filter(line => isCleanLine(line.text));
     const lines = zones && zones.length
       ? allLines.filter((line) => zones.some((zone) => overlaps(line.bbox, zone) > 0))
       : allLines;
@@ -645,6 +645,23 @@
       .trim();
   }
 
+  // OCRゴミ文字を除去してテキストをクリーンにする
+  function cleanOcrText(text) {
+    return text
+      .replace(/[|\\^~`<>{}\[\]@#\$%*=]+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  // OCR行の品質チェック（記号まみれのゴミ行を除外する）
+  function isCleanLine(text) {
+    const t = text.trim();
+    if (!t || t.length < 3) return false;
+    if (!/[a-zA-Z]{2,}/.test(t)) return false;
+    const garbage = (t.match(/[|\\^~`<>{}\[\]@#\$%*=]/g) || []).length;
+    if (garbage / t.length > 0.12) return false;
+    return true;
+  }
   // 簡易スチE�E�E�E��E�E�E�ング�E�E�E�E�E�E�E�原形復允E�E�E�E��E�E�E�E
   function lemmatize(word) {
     const w = word.toLowerCase();
@@ -744,7 +761,7 @@
     if (!words.length || !lines.length) {
       const w = cleanWord(text).split(" ")[0];
       const s = findSentenceContaining(fullText.replace(/\n/g, " "), w);
-      return (s && s.length <= 500) ? s : fullText.trim().substring(0, 200);
+      return (s && s.length <= 500) ? cleanOcrText(s) : cleanOcrText(fullText.trim().substring(0, 200));
     }
 
     // ハイライト語のbboxと重なる行を位置基準で特定する
@@ -766,12 +783,12 @@
     // anchor行の前後3行を結合して段落テキストを作り、その中の1文を探す
     const winStart = Math.max(0, anchorIdx - 3);
     const winEnd = Math.min(sortedLines.length - 1, anchorIdx + 3);
-    const paragraph = sortedLines.slice(winStart, winEnd + 1).map(l => l.text.trim()).join(" ");
+    const paragraph = sortedLines.slice(winStart, winEnd + 1).map(l => cleanOcrText(l.text.trim())).join(" ");
     const targetWord = cleanWord(text).split(" ")[0];
     const sentence = findSentenceContaining(paragraph, targetWord);
-    if (sentence && sentence.length <= 500) return sentence;
+    if (sentence && sentence.length <= 500) return cleanOcrText(sentence);
 
-    return sortedLines[anchorIdx].text.trim() || text;
+    return cleanOcrText(sortedLines[anchorIdx].text.trim()) || text;
   }
   function findSentenceContaining(text, word) {
     const normalized = text.replace(/\s+/g, " ").trim();
@@ -799,11 +816,18 @@
   }
 
   function detectPos(word) {
+    // 複数語（句）の場合
+    const tokens = word.trim().split(/\s+/);
+    if (tokens.length >= 2) {
+      const first = tokens[0].toLowerCase().replace(/[^a-z]/g, "");
+      if (/^(get|go|come|take|give|make|put|look|turn|run|fall|break|bring|keep|set|cut|let|hold|carry|pass|pick|pull|push|call|try|work|move|play|write|speak|think|feel|hear|see|find|use|show|send|read|grow|lose|build|locate|explore|discover|develop)$/.test(first)) return "動詞句";
+      return "名詞句";
+    }
     const KNOWN = {
-      "名詞": ["behavior","belief","chance","connection","definition","exam","example","fact","habit","luck","pattern","performance","superstition","world","brain","sport","athlete","score","question","object","time","day","pen","percent","result","place","point","thing","way","life","part","people","year","hand","name","group","idea","case","week","test","kind","mind","power","number","level","end","health","sense","effort","skill","rule","goal","term","role","risk","type","form","process"],
-      "形容詞": ["complex","difficult","irrational","lucky","professional","rational","simple","superstitious","careful","useful","different","important","special","good","bad","new","old","high","low","long","short","large","small","big","little","right","wrong","true","false","free","full","hard","soft","fast","slow","early","late","young","open","close","clear","dark","light","deep","real","strong","weak","sure","aware","able","ready"],
-      "動詞": ["admit","believe","connect","involve","look","make","study","think","use","help","find","get","know","show","take","try","want","work","give","need","go","come","see","say","tell","ask","put","seem","feel","keep","let","begin","start","stop","move","play","run","set","turn","live","bring","hold","read","sit","stand","lose","pay","meet","include","continue","learn","change","lead","understand","watch","follow","create","build","send","spend"],
-      "副詞": ["actually","carefully","instead","also","even","just","only","really","very","well","always","never","often","usually","already","still","yet","again","away","back","here","there","now","then","today","soon","later","together","however","therefore","moreover","perhaps","probably","simply","clearly","directly","mostly","rather","quite","once"]
+      "名詞": ["behavior","belief","chance","connection","definition","exam","example","fact","habit","luck","pattern","performance","superstition","world","brain","sport","athlete","score","question","object","time","day","pen","percent","result","place","point","thing","way","life","part","people","year","hand","name","group","idea","case","week","test","kind","mind","power","number","level","end","health","sense","effort","skill","rule","goal","term","role","risk","type","form","process","terrace","greenery","scenery","landscape","agriculture","economy","community","technology","nature","culture","society","environment","mountain","valley","river","forest","region","area","student","president","assistant","participant","element","moment","department","subject","project","impact","concept","aspect","account"],
+      "形容詞": ["complex","difficult","irrational","lucky","professional","rational","simple","superstitious","careful","useful","different","important","special","good","bad","new","old","high","low","long","short","large","small","big","little","right","wrong","true","false","free","full","hard","soft","fast","slow","early","late","young","open","close","clear","dark","light","deep","real","strong","weak","sure","aware","able","ready","lush","vast","scenic","rural","urban","natural","local","global","ancient","modern","beautiful","amazing","traditional","significant","relevant","efficient","effective","appropriate","available","various","diverse","unique","typical","common","popular","current","recent","major","minor","primary","secondary"],
+      "動詞": ["admit","believe","connect","involve","look","make","study","think","use","help","find","get","know","show","take","try","want","work","give","need","go","come","see","say","tell","ask","put","seem","feel","keep","let","begin","start","stop","move","play","run","set","turn","live","bring","hold","read","sit","stand","lose","pay","meet","include","continue","learn","change","lead","understand","watch","follow","create","build","send","spend","locate","explore","discover","develop","improve","support","protect","produce","cultivate","consider","provide","require","represent","describe","explain","suggest","indicate","allow","enable","prevent","promote","reduce","increase","achieve","maintain","establish","identify"],
+      "副詞": ["actually","carefully","instead","also","even","just","only","really","very","well","always","never","often","usually","already","still","yet","again","away","back","here","there","now","then","today","soon","later","together","however","therefore","moreover","perhaps","probably","simply","clearly","directly","mostly","rather","quite","once","especially","particularly","generally","largely","mainly","rapidly","gradually","recently","currently","traditionally","typically"]
     };
     const w = word.toLowerCase().replace(/[^a-z]/g, "");
     if (!w) return "";
@@ -811,9 +835,9 @@
       if (list.includes(w)) return label;
     }
     if (/ly$/.test(w) && w.length > 4) return "副詞";
-    if (/(tion|sion|ment|ness|ity|ance|ence|hood|ship|ism|age)$/i.test(w)) return "名詞";
-    if (/(ist|er|or|ee|eer|ian|ant|ent|ess)$/i.test(w)) return "名詞";
-    if (/(ful|less|ous|ive|al|ic|ary|ible|able|ish|ular|esque)$/i.test(w)) return "形容詞";
+    if (/(tion|sion|ment|ness|ity|ance|ence|hood|ship|ism|age|ery|ure|ture|ics|ogy|omy)$/i.test(w)) return "名詞";
+    if (/(ist|er|or|ee|eer|ian|ess)$/i.test(w) && w.length > 4) return "名詞";
+    if (/(ful|less|ous|ive|al|ic|ary|ible|able|ish|ular|esque|ant|ent)$/i.test(w) && w.length > 5) return "形容詞";
     if (/(ize|ise|ify|ate|ened|ening)$/i.test(w)) return "動詞";
     return "";
   }
