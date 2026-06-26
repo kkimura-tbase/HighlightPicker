@@ -618,10 +618,22 @@
 
   function normalizeLines(data) {
     const sourceLines = Array.isArray(data.lines) ? data.lines : [];
-    return sourceLines.map((line) => ({
-      text: line.text || "",
-      bbox: normalizeBbox(line.bbox || line)
-    })).filter((line) => line.text.trim());
+    return sourceLines.map((line) => {
+      let text = line.text || "";
+      // line.words が利用可能な場合、信頼度の低い単語（OCRゴミ）を除外して再構築する
+      // 画像テクスチャの誤読は通常 confidence < 45% になる
+      const lineWords = Array.isArray(line.words) ? line.words : [];
+      if (lineWords.length > 0) {
+        const filtered = lineWords
+          .filter(w => !Number.isFinite(w.confidence) || w.confidence >= 45)
+          .map(w => (w.text || "").trim())
+          .filter(t => t.length > 0);
+        if (filtered.length > 0) {
+          text = filtered.join(" ");
+        }
+      }
+      return { text, bbox: normalizeBbox(line.bbox || line) };
+    }).filter((line) => line.text.trim());
   }
 
   function normalizeBbox(bbox) {
