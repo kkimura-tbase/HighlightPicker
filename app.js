@@ -81,10 +81,7 @@
     els.clearReadingBtn.addEventListener("click", clearReadingZone);
     els.clearImageBtn.addEventListener("click", clearImage);
     els.clearListBtn.addEventListener("click", clearSavedItems);
-    els.canvas.addEventListener("mousedown", onCanvasMouseDown);
-    els.canvas.addEventListener("mousemove", onCanvasMouseMove);
-    els.canvas.addEventListener("mouseup", onCanvasMouseUp);
-    els.canvas.addEventListener("mouseleave", onCanvasMouseLeave);
+    els.canvas.addEventListener("mousedown", onMouseDown);
     els.canvas.addEventListener("touchstart", onCanvasMouseDown, { passive: false });
     els.canvas.addEventListener("touchmove", onCanvasMouseMove, { passive: false });
     els.canvas.addEventListener("touchend", onCanvasMouseUp, { passive: false });
@@ -262,6 +259,17 @@
     };
   }
 
+  // Like getCanvasCoords but clamps the result to canvas bounds (used for document-level mouse tracking)
+  function getCanvasCoordsClamped(e) {
+    const rect = els.canvas.getBoundingClientRect();
+    const scaleX = els.canvas.width / rect.width;
+    const scaleY = els.canvas.height / rect.height;
+    return {
+      x: Math.max(0, Math.min(els.canvas.width, (e.clientX - rect.left) * scaleX)),
+      y: Math.max(0, Math.min(els.canvas.height, (e.clientY - rect.top) * scaleY))
+    };
+  }
+
   function toggleReadingMode() {
     inclusionModeActive = !inclusionModeActive;
     els.readingZoneBtn.classList.toggle("is-active", inclusionModeActive);
@@ -290,6 +298,47 @@
     setStatus("画像クリア");
   }
 
+  // Mouse drag: track at document level so moving outside canvas doesn't cancel the selection
+  function onMouseDown(e) {
+    if (!inclusionModeActive || !imageBitmap) return;
+    e.preventDefault();
+    inclusionDragStart = getCanvasCoords(e);
+    inclusionDragCurrent = { ...inclusionDragStart };
+    document.addEventListener("mousemove", onDocMouseMove);
+    document.addEventListener("mouseup", onDocMouseUp);
+  }
+
+  function onDocMouseMove(e) {
+    if (!inclusionModeActive || !inclusionDragStart) return;
+    inclusionDragCurrent = getCanvasCoordsClamped(e);
+    if (!rafId) {
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        drawImage(lastHighlightRects);
+      });
+    }
+  }
+
+  function onDocMouseUp(e) {
+    document.removeEventListener("mousemove", onDocMouseMove);
+    document.removeEventListener("mouseup", onDocMouseUp);
+    if (!inclusionModeActive || !inclusionDragStart) return;
+    const end = getCanvasCoordsClamped(e);
+    const x = Math.min(inclusionDragStart.x, end.x);
+    const y = Math.min(inclusionDragStart.y, end.y);
+    const width = Math.abs(end.x - inclusionDragStart.x);
+    const height = Math.abs(end.y - inclusionDragStart.y);
+    inclusionDragStart = null;
+    inclusionDragCurrent = null;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (width >= 5 && height >= 5) {
+      inclusionZones.push({ x, y, width, height });
+      els.clearReadingBtn.hidden = false;
+    }
+    drawImage(lastHighlightRects);
+  }
+
+  // Touch handlers (touch events natively follow the finger, no document-level workaround needed)
   function onCanvasMouseDown(e) {
     if (!inclusionModeActive || !imageBitmap) return;
     e.preventDefault();
