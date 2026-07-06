@@ -1,13 +1,25 @@
-(function () {
+﻿(function () {
   "use strict";
 
   const STORAGE_KEY = "context-vocab-items-v1";
-  const ENDPOINT_KEY = "context-vocab-gas-endpoint";
-  // 教員・管琁E�E�E�E��E�E�E�E�E�E�E��E�E�E�ここにGASのWebApp URLを記�Eすると、生徒�E設定不要で自動連携されます、E
+  const REVIEW_STORAGE_KEY = "context-vocab-review-v1";
+  const OWNER_KEY = "context-vocab-owner";
+  const LESSON_KEY = "context-vocab-current-lesson";
+  const QUIZ_AUTO_NEXT_KEY = "context-vocab-quiz-auto-next";
+  const DEFAULT_OWNER = "";
+  const DEFAULT_LESSONS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Unit 5", "Unit 6", "Unit 7", "Unit 8"];
+  const CUSTOM_LESSON_VALUE = "__custom__";
+  // 教師側で端末ごとに固定したい場合だけ、任意の氏名またはIDを入れます。
+  const FIXED_OWNER = "";
+  // 管理者が固定のGAS URLを配布したい場合だけ、ここに /exec のURLを入れます。
   const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbwsob6egv26XAl64Xxiv4m5GWevAnHnHjMW6v1uCcb6DoXG1yg5j4JIeTs4OwyhOH4g2g/exec";
 
   const $ = (id) => document.getElementById(id);
   const els = {
+    ownerLabel: $("ownerLabel"),
+    ownerSetup: $("ownerSetup"),
+    ownerInput: $("ownerInput"),
+    saveOwnerBtn: $("saveOwnerBtn"),
     imageInput: $("imageInput"),
     chooseImageBtn: $("chooseImageBtn"),
     dropZone: $("dropZone"),
@@ -19,12 +31,18 @@
     highlightSensitivity: $("highlightSensitivity"),
     resultsList: $("resultsList"),
     detectedCount: $("detectedCount"),
-    gasEndpoint: $("gasEndpoint"),
+    lessonSelect: $("lessonSelect"),
+    customLessonInput: $("customLessonInput"),
+    lessonOptions: $("lessonOptions"),
     saveAllBtn: $("saveAllBtn"),
     wordList: $("wordList"),
     searchInput: $("searchInput"),
     refreshListBtn: $("refreshListBtn"),
     exportCsvBtn: $("exportCsvBtn"),
+    quizScope: $("quizScope"),
+    quizLesson: $("quizLesson"),
+    quizAutoNext: $("quizAutoNext"),
+    startQuizBtn: $("startQuizBtn"),
     nextQuizBtn: $("nextQuizBtn"),
     quizBox: $("quizBox"),
     resultTemplate: $("resultTemplate"),
@@ -39,7 +57,7 @@
   let imageBitmap = null;
   let detectedResults = [];
   let savedItems = [];
-  let quizItem = null;
+  let quizSession = null;
   let inclusionZones = [];
   let inclusionModeActive = false;
   let inclusionDragStart = null;
@@ -47,14 +65,21 @@
   let lastHighlightRects = [];
   let canvasScale = 1;
   let rafId = null;
+  let editingSavedItemId = null;
+  let quizAutoNextTimer = null;
+  let quizAutoNextInterval = null;
   
-  // ソート状慁E
+  // ソート状態
   let sortConfig = { key: "createdAt", asc: false };
 
   init();
 
   function init() {
-    els.gasEndpoint.value = GAS_ENDPOINT || localStorage.getItem(ENDPOINT_KEY) || "";
+    setOwnerLabel();
+    els.saveOwnerBtn.addEventListener("click", saveOwnerFromInput);
+    els.ownerInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") saveOwnerFromInput();
+    });
     els.chooseImageBtn.addEventListener("click", () => els.imageInput.click());
     els.imageInput.addEventListener("change", (event) => {
       const file = event.target.files && event.target.files[0];
@@ -72,20 +97,54 @@
     window.addEventListener("paste", onPaste);
     els.runOcrBtn.addEventListener("click", runExtraction);
     els.saveAllBtn.addEventListener("click", saveDetectedItems);
-    els.gasEndpoint.addEventListener("change", saveEndpoint);
+    if (els.lessonSelect) {
+      restoreLessonSelection(localStorage.getItem(LESSON_KEY) || "");
+      els.lessonSelect.addEventListener("change", () => {
+        updateCustomLessonVisibility(true);
+        localStorage.setItem(LESSON_KEY, getCurrentLesson());
+      });
+    }
+    if (els.customLessonInput) {
+      els.customLessonInput.addEventListener("input", () => {
+        localStorage.setItem(LESSON_KEY, getCurrentLesson());
+      });
+    }
     els.searchInput.addEventListener("input", renderWordList);
     els.refreshListBtn.addEventListener("click", loadSavedItems);
     els.exportCsvBtn.addEventListener("click", exportCsv);
-    els.nextQuizBtn.addEventListener("click", showRandomQuiz);
+    els.startQuizBtn.addEventListener("click", () => {
+      if (els.startQuizBtn.dataset.quizAction === "home") {
+        showRandomQuiz(false);
+        return;
+      }
+      startQuizSession();
+    });
+    els.nextQuizBtn.addEventListener("click", () => advanceQuiz());
+    els.quizScope.addEventListener("change", () => showRandomQuiz(false));
+    if (els.quizLesson) els.quizLesson.addEventListener("change", () => showRandomQuiz(false));
+    if (els.quizAutoNext) {
+      els.quizAutoNext.checked = getQuizAutoNextPreference();
+      els.quizAutoNext.addEventListener("change", () => {
+        localStorage.setItem(QUIZ_AUTO_NEXT_KEY, els.quizAutoNext.checked ? "1" : "0");
+        if (!els.quizAutoNext.checked) clearQuizAutoNext();
+      });
+    }
     els.readingZoneBtn.addEventListener("click", toggleReadingMode);
     els.clearReadingBtn.addEventListener("click", clearReadingZone);
     els.clearImageBtn.addEventListener("click", clearImage);
     els.clearListBtn.addEventListener("click", clearSavedItems);
-    els.canvas.addEventListener("mousedown", onMouseDown);
+    els.canvas.addEventListener("mousedown", onCanvasMouseDown);
+    els.canvas.addEventListener("mousemove", onCanvasMouseMove);
+    els.canvas.addEventListener("mouseup", onCanvasMouseUp);
+    els.canvas.addEventListener("mouseleave", onCanvasMouseLeave);
+    document.addEventListener("mousemove", onCanvasMouseMove);
+    document.addEventListener("mouseup", onCanvasMouseUp);
     els.canvas.addEventListener("touchstart", onCanvasMouseDown, { passive: false });
     els.canvas.addEventListener("touchmove", onCanvasMouseMove, { passive: false });
     els.canvas.addEventListener("touchend", onCanvasMouseUp, { passive: false });
     els.canvas.addEventListener("touchcancel", onCanvasMouseLeave, { passive: false });
+    document.addEventListener("touchmove", onCanvasMouseMove, { passive: false });
+    document.addEventListener("touchend", onCanvasMouseUp, { passive: false });
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -99,7 +158,7 @@
       });
     });
 
-    // ソート�Eタンのイベントリスナ�E
+    // ソートボタンのイベントリスナー
     const tableHeaders = document.querySelectorAll("#wordTable th[data-sort]");
     if (tableHeaders) {
       tableHeaders.forEach(th => {
@@ -124,7 +183,117 @@
       if (initialTh) initialTh.classList.add("sort-desc");
     }
 
-    loadSavedItems();
+    if (getCurrentOwner()) {
+      hideOwnerSetup();
+      loadSavedItems();
+    } else {
+      showOwnerSetup();
+      renderWordList();
+      showRandomQuiz(false);
+    }
+  }
+
+  function getCurrentOwner() {
+    return normalizeOwner(FIXED_OWNER || localStorage.getItem(OWNER_KEY) || DEFAULT_OWNER);
+  }
+
+  function normalizeOwner(value) {
+    return String(value || "").trim().slice(0, 80);
+  }
+
+  function normalizeLesson(value) {
+    return String(value || "").trim().slice(0, 80);
+  }
+
+  function getCurrentLesson() {
+    let lesson = localStorage.getItem(LESSON_KEY) || "";
+    if (els.lessonSelect) {
+      lesson = els.lessonSelect.value === CUSTOM_LESSON_VALUE
+        ? (els.customLessonInput ? els.customLessonInput.value : "")
+        : els.lessonSelect.value;
+    }
+    lesson = normalizeLesson(lesson);
+    if (lesson) localStorage.setItem(LESSON_KEY, lesson);
+    return lesson;
+  }
+
+  function restoreLessonSelection(value) {
+    const lesson = normalizeLesson(value);
+    if (!els.lessonSelect) return;
+    if (!lesson || DEFAULT_LESSONS.includes(lesson)) {
+      els.lessonSelect.value = lesson;
+      if (els.customLessonInput) els.customLessonInput.value = "";
+    } else {
+      els.lessonSelect.value = CUSTOM_LESSON_VALUE;
+      if (els.customLessonInput) els.customLessonInput.value = lesson;
+    }
+    updateCustomLessonVisibility();
+  }
+
+  function updateCustomLessonVisibility(shouldFocus) {
+    if (!els.lessonSelect || !els.customLessonInput) return;
+    const isCustom = els.lessonSelect.value === CUSTOM_LESSON_VALUE;
+    els.customLessonInput.hidden = !isCustom;
+    if (isCustom && shouldFocus) window.setTimeout(() => els.customLessonInput.focus(), 0);
+  }
+
+  function setLessonEditControls(select, input, value) {
+    const lesson = normalizeLesson(value);
+    if (!select || !input) return;
+    if (!lesson || DEFAULT_LESSONS.includes(lesson)) {
+      select.value = lesson;
+      input.value = "";
+    } else {
+      select.value = CUSTOM_LESSON_VALUE;
+      input.value = lesson;
+    }
+    updateLessonEditCustomVisibility(select, input, false);
+  }
+
+  function updateLessonEditCustomVisibility(select, input, shouldFocus) {
+    if (!select || !input) return;
+    const isCustom = select.value === CUSTOM_LESSON_VALUE;
+    input.hidden = !isCustom;
+    if (isCustom && shouldFocus) window.setTimeout(() => input.focus(), 0);
+  }
+
+  function getLessonEditValue(select, input) {
+    if (!select) return "";
+    return normalizeLesson(select.value === CUSTOM_LESSON_VALUE ? (input ? input.value : "") : select.value);
+  }
+
+  function getCurrentOwnerLabel() {
+    return getCurrentOwner() || "未登録";
+  }
+
+  function setOwnerLabel() {
+    if (els.ownerLabel) els.ownerLabel.textContent = getCurrentOwnerLabel();
+  }
+
+  function showOwnerSetup() {
+    els.ownerSetup.hidden = false;
+    window.setTimeout(() => els.ownerInput.focus(), 0);
+  }
+
+  function hideOwnerSetup() {
+    els.ownerSetup.hidden = true;
+  }
+
+  async function saveOwnerFromInput() {
+    const owner = normalizeOwner(els.ownerInput.value);
+    if (!owner) {
+      alert("氏名またはIDを入力してください。");
+      els.ownerInput.focus();
+      return;
+    }
+    localStorage.setItem(OWNER_KEY, owner);
+    setOwnerLabel();
+    hideOwnerSetup();
+    await loadSavedItems();
+  }
+
+  function withCurrentOwner(item) {
+    return { ...item, owner: item.owner || getCurrentOwner() };
   }
 
   function onDragOver(event) {
@@ -171,6 +340,7 @@
         els.canvas.classList.remove("reading-mode");
       }
       els.clearReadingBtn.hidden = true;
+      els.clearImageBtn.hidden = false;
       els.uploadPanel.classList.add("has-image");
       setStatus("読込完了");
     } finally {
@@ -253,21 +423,16 @@
     const scaleX = els.canvas.width / rect.width;
     const scaleY = els.canvas.height / rect.height;
     const point = e.touches ? (e.touches[0] || e.changedTouches[0]) : e;
+    const rawX = (point.clientX - rect.left) * scaleX;
+    const rawY = (point.clientY - rect.top) * scaleY;
     return {
-      x: (point.clientX - rect.left) * scaleX,
-      y: (point.clientY - rect.top) * scaleY
+      x: clamp(rawX, 0, els.canvas.width),
+      y: clamp(rawY, 0, els.canvas.height)
     };
   }
 
-  // Like getCanvasCoords but clamps the result to canvas bounds (used for document-level mouse tracking)
-  function getCanvasCoordsClamped(e) {
-    const rect = els.canvas.getBoundingClientRect();
-    const scaleX = els.canvas.width / rect.width;
-    const scaleY = els.canvas.height / rect.height;
-    return {
-      x: Math.max(0, Math.min(els.canvas.width, (e.clientX - rect.left) * scaleX)),
-      y: Math.max(0, Math.min(els.canvas.height, (e.clientY - rect.top) * scaleY))
-    };
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
   }
 
   function toggleReadingMode() {
@@ -293,52 +458,14 @@
     els.readingZoneBtn.disabled = true;
     els.clearReadingBtn.hidden = true;
     els.clearImageBtn.hidden = true;
+    els.previewWrap.hidden = true;
+    inclusionZones = [];
+    lastHighlightRects = [];
     detectedResults = [];
     renderResults();
     setStatus("画像クリア");
   }
 
-  // Mouse drag: track at document level so moving outside canvas doesn't cancel the selection
-  function onMouseDown(e) {
-    if (!inclusionModeActive || !imageBitmap) return;
-    e.preventDefault();
-    inclusionDragStart = getCanvasCoords(e);
-    inclusionDragCurrent = { ...inclusionDragStart };
-    document.addEventListener("mousemove", onDocMouseMove);
-    document.addEventListener("mouseup", onDocMouseUp);
-  }
-
-  function onDocMouseMove(e) {
-    if (!inclusionModeActive || !inclusionDragStart) return;
-    inclusionDragCurrent = getCanvasCoordsClamped(e);
-    if (!rafId) {
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        drawImage(lastHighlightRects);
-      });
-    }
-  }
-
-  function onDocMouseUp(e) {
-    document.removeEventListener("mousemove", onDocMouseMove);
-    document.removeEventListener("mouseup", onDocMouseUp);
-    if (!inclusionModeActive || !inclusionDragStart) return;
-    const end = getCanvasCoordsClamped(e);
-    const x = Math.min(inclusionDragStart.x, end.x);
-    const y = Math.min(inclusionDragStart.y, end.y);
-    const width = Math.abs(end.x - inclusionDragStart.x);
-    const height = Math.abs(end.y - inclusionDragStart.y);
-    inclusionDragStart = null;
-    inclusionDragCurrent = null;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (width >= 5 && height >= 5) {
-      inclusionZones.push({ x, y, width, height });
-      els.clearReadingBtn.hidden = false;
-    }
-    drawImage(lastHighlightRects);
-  }
-
-  // Touch handlers (touch events natively follow the finger, no document-level workaround needed)
   function onCanvasMouseDown(e) {
     if (!inclusionModeActive || !imageBitmap) return;
     e.preventDefault();
@@ -376,11 +503,10 @@
     drawImage(lastHighlightRects);
   }
 
-  function onCanvasMouseLeave() {
+  function onCanvasMouseLeave(e) {
     if (!inclusionModeActive || !inclusionDragStart) return;
-    inclusionDragStart = null;
-    inclusionDragCurrent = null;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (e && (e.touches || e.changedTouches)) e.preventDefault();
+    inclusionDragCurrent = e ? getCanvasCoords(e) : inclusionDragCurrent;
     drawImage(lastHighlightRects);
   }
 
@@ -406,7 +532,7 @@
 
     setStatus("OCR中");
     els.runOcrBtn.disabled = true;
-    // OCR用に枠なし�Eクリーンなオフスクリーンキャンバスを作�Eする
+    // OCR用に枠なしのクリーンなオフスクリーンキャンバスを作成する
     const ocrCanvas = document.createElement("canvas");
     ocrCanvas.width = els.canvas.width;
     ocrCanvas.height = els.canvas.height;
@@ -726,11 +852,11 @@
     if (garbage / t.length > 0.12) return false;
     return true;
   }
-  // 簡易スチE�E�E�E��E�E�E�ング�E�E�E�E�E�E�E�原形復允E�E�E�E��E�E�E�E
+  // 簡易ステミング・原形復元
   function lemmatize(word) {
     const w = word.toLowerCase();
     
-    // 不規則変化�E�E�E�E�E�E�E�代表皁E�E�E�E��E�E�E�も�E�E�E�E�E�E�E�E�E
+    // 代表的な不規則変化も補正する
     const irregulars = {
       "is": "be", "am": "be", "are": "be", "was": "be", "were": "be", "been": "be",
       "has": "have", "had": "have",
@@ -878,6 +1004,48 @@
     });
   }
 
+  function uniqueByOwnerWordAndContext(items) {
+    const resultByKey = new Map();
+    const lessonByKey = new Map();
+    const keysByBase = new Map();
+
+    items.forEach((item) => {
+      const owner = item.owner || DEFAULT_OWNER;
+      const lesson = normalizeLesson(item.lesson || "");
+      const word = String(item.word || "").trim().toLowerCase();
+      const context = String(item.context || "").trim().toLowerCase();
+      const baseKey = `${owner}|${word}|${context}`;
+      const key = `${owner}|${lesson}|${word}|${context}`;
+      const baseKeys = keysByBase.get(baseKey) || new Set();
+
+      if (lesson) {
+        baseKeys.forEach((existingKey) => {
+          if (!lessonByKey.get(existingKey)) {
+            resultByKey.delete(existingKey);
+            lessonByKey.delete(existingKey);
+            baseKeys.delete(existingKey);
+          }
+        });
+        if (!resultByKey.has(key)) {
+          resultByKey.set(key, { ...item, lesson });
+          lessonByKey.set(key, lesson);
+          baseKeys.add(key);
+        }
+      } else {
+        const hasTaggedItem = [...baseKeys].some((existingKey) => Boolean(lessonByKey.get(existingKey)));
+        if (!hasTaggedItem && !resultByKey.has(key)) {
+          resultByKey.set(key, { ...item, lesson });
+          lessonByKey.set(key, lesson);
+          baseKeys.add(key);
+        }
+      }
+
+      keysByBase.set(baseKey, baseKeys);
+    });
+
+    return [...resultByKey.values()];
+  }
+
   function detectPos(word) {
     // 複数語（句）の場合
     const tokens = word.trim().split(/\s+/);
@@ -979,43 +1147,72 @@
   }
 
   async function saveDetectedItems() {
-    const items = detectedResults
-      .map((item) => ({
-        ...item,
-        word: item.word.trim(),
-        context: item.context.trim(),
-        contextJa: (item.contextJa || "").trim(),
-        meaning: (item.meaning || "").trim(),
-        createdAt: item.createdAt || new Date().toISOString()
-      }))
-      .filter((item) => item.word);
-
-    if (!items.length) return;
-
-    setStatus("保存中");
     try {
-      const endpoint = saveEndpoint();
-      if (endpoint) {
-        await postToGas(endpoint, { action: "saveMany", items });
+      const owner = getCurrentOwner();
+      if (!owner) {
+        showOwnerSetup();
+        alert("先に氏名またはIDを登録してください。");
+        return;
       }
+
+      const lesson = getCurrentLesson();
+      const items = detectedResults
+        .map((item) => ({
+          ...item,
+          lesson,
+          word: (item.word || "").trim(),
+          context: (item.context || "").trim(),
+          contextJa: (item.contextJa || "").trim(),
+          meaning: (item.meaning || "").trim(),
+          createdAt: item.createdAt || new Date().toISOString(),
+          owner
+        }))
+        .filter((item) => item.word);
+
+      if (!items.length) {
+        setStatus("保存対象なし");
+        alert("保存できる単語がありません。抽出結果の英単語欄を確認してください。");
+        return;
+      }
+
+      setStatus("保存中");
+
+      // GAS同期に失敗しても、端末内の履歴は失わないよう先にローカル保存する。
       saveLocalItems(items);
       detectedResults = [];
       renderResults();
-      await loadSavedItems();
-      setStatus("保存完了");
+      renderWordList();
+      showRandomQuiz(false);
+
+      const endpoint = saveEndpoint();
+      if (!endpoint) {
+        setStatus("ローカル保存完了");
+        alert("端末内に保存しました。");
+        return;
+      }
+
+      try {
+        await postToGas(endpoint, { action: "saveMany", owner, items });
+        await loadSavedItems();
+        setStatus("保存完了");
+      } catch (error) {
+        console.error(error);
+        setStatus("GAS同期失敗");
+        alert("端末内には保存しましたが、GASへの同期に失敗しました。\n\n理由：" + formatErrorMessage(error) + "\n\nGAS側のCode.gsを最新版に貼り替えて、Webアプリを再デプロイしてください。");
+      }
     } catch (error) {
       console.error(error);
       setStatus("保存失敗");
-      alert("保存に失敗しました。GASのURLと公開設定を確認してください。");
+      alert("保存処理でエラーが発生しました。\n\n理由：" + formatErrorMessage(error));
     }
   }
-
   function saveEndpoint() {
-    if (GAS_ENDPOINT) return GAS_ENDPOINT;
-    const endpoint = els.gasEndpoint.value.trim();
-    if (endpoint) localStorage.setItem(ENDPOINT_KEY, endpoint);
-    else localStorage.removeItem(ENDPOINT_KEY);
-    return endpoint;
+    return GAS_ENDPOINT;
+  }
+
+  function formatErrorMessage(error) {
+    if (!error) return "不明なエラー";
+    return error.message || String(error);
   }
 
   async function postToGas(endpoint, payload) {
@@ -1063,41 +1260,96 @@
       if (endpoint) {
         const url = new URL(endpoint);
         url.searchParams.set("action", "list");
+        url.searchParams.set("owner", getCurrentOwner());
         const response = await fetch(url.toString());
         const data = await response.json();
         if (data.ok && Array.isArray(data.items)) {
-          savedItems = data.items;
-          saveLocalSnapshot(savedItems);
+          savedItems = mergeLocalItems(data.items.map(withCurrentOwner))
+            .filter((item) => item.owner === getCurrentOwner());
         } else {
-          savedItems = getLocalItems();
+          savedItems = getLocalItemsForCurrentOwner();
         }
       } else {
-        savedItems = getLocalItems();
+        savedItems = getLocalItemsForCurrentOwner();
       }
     } catch (error) {
       console.warn(error);
-      savedItems = getLocalItems();
+      savedItems = getLocalItemsForCurrentOwner();
     }
     savedItems = savedItems.map((item) => ({
       ...item,
+      lesson: normalizeLesson(item.lesson || ""),
       pos: item.pos || detectPos(item.word)
     }));
+    refreshLessonChoices();
     renderWordList();
     showRandomQuiz(false);
   }
 
   function saveLocalItems(items) {
-    const merged = uniqueByWordAndContext([...items, ...getLocalItems()]);
+    const ownerItems = items.map(withCurrentOwner);
+    savedItems = mergeLocalItems(ownerItems).filter((item) => item.owner === getCurrentOwner());
+    refreshLessonChoices();
+  }
+
+  function mergeLocalItems(items) {
+    const merged = uniqueByOwnerWordAndContext([...items.map(withCurrentOwner), ...getLocalItems()]);
     saveLocalSnapshot(merged);
-    savedItems = merged;
+    return merged;
+  }
+
+  function getLocalItemsForCurrentOwner() {
+    const owner = getCurrentOwner();
+    return uniqueByOwnerWordAndContext(getLocalItems()).filter((item) => (item.owner || DEFAULT_OWNER) === owner);
   }
 
   function getLocalItems() {
     try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]").map((item) => ({
+        ...item,
+        lesson: normalizeLesson(item.lesson || ""),
+        owner: item.owner || DEFAULT_OWNER
+      }));
     } catch {
       return [];
     }
+  }
+
+  function refreshLessonChoices() {
+    const lessons = getKnownLessons();
+    if (els.lessonOptions) {
+      els.lessonOptions.innerHTML = lessons.map((lesson) => `<option value="${escapeHtml(lesson)}"></option>`).join("");
+    }
+    if (els.quizLesson) {
+      const current = els.quizLesson.value || "all";
+      els.quizLesson.innerHTML = [
+        '<option value="all">すべて</option>',
+        ...lessons.map((lesson) => `<option value="${escapeHtml(lesson)}">${escapeHtml(lesson)}</option>`)
+      ].join("");
+      els.quizLesson.value = lessons.includes(current) ? current : "all";
+    }
+  }
+
+  function getKnownLessons() {
+    const lessons = new Set(DEFAULT_LESSONS);
+    getLocalItems().forEach((item) => {
+      const lesson = normalizeLesson(item.lesson || "");
+      if (lesson) lessons.add(lesson);
+    });
+    savedItems.forEach((item) => {
+      const lesson = normalizeLesson(item.lesson || "");
+      if (lesson) lessons.add(lesson);
+    });
+    return [...lessons].sort(compareLessonLabels);
+  }
+
+  function compareLessonLabels(a, b) {
+    const unitA = /^Unit\s+(\d+)$/i.exec(a);
+    const unitB = /^Unit\s+(\d+)$/i.exec(b);
+    if (unitA && unitB) return Number(unitA[1]) - Number(unitB[1]);
+    if (unitA) return -1;
+    if (unitB) return 1;
+    return a.localeCompare(b, "ja");
   }
 
   function saveLocalSnapshot(items) {
@@ -1106,41 +1358,88 @@
 
 
   async function clearSavedItems() {
-    if (!confirm("GASおよびローカルのすべての単語データを削除します。本当によろしいですか？")) return;
-    // ローカルは先に必ず削除
-    localStorage.removeItem(STORAGE_KEY);
+    const ownerLabel = getCurrentOwnerLabel();
+    if (!confirm(`${ownerLabel} の単語データを削除します。本当によろしいですか？`)) return;
+    // 選択中の利用者分だけ先に削除
+    const owner = getCurrentOwner();
+    saveLocalSnapshot(getLocalItems().filter((item) => item.owner !== owner));
     savedItems = [];
+    refreshLessonChoices();
     renderWordList();
     showRandomQuiz(false);
     // GASが設定されていれば同期（失敗してもローカルはすでに削除済み）
     const endpoint = saveEndpoint();
     if (endpoint) {
       try {
-        await getToGas(endpoint, { action: "clear" });
+        await postToGas(endpoint, { action: "clear", owner: getCurrentOwner() });
       } catch (error) {
         console.error(error);
         alert(`ローカルデータは削除しました。GAS側の削除に失敗しました。URLを確認してください。\n\nエラー：${error.message}`);
         return;
       }
     }
-    alert("すべてのデータを消去しました。");
+    alert(`${ownerLabel} のデータを消去しました。`);
   }
 
   async function deleteSavedItem(id) {
     if (!confirm("この単語を削除しますか？")) return;
     // ローカルは先に必ず削除
-    savedItems = savedItems.filter(item => item.id !== id);
-    saveLocalSnapshot(savedItems);
+    const owner = getCurrentOwner();
+    const remaining = getLocalItems().filter(item => !(item.id === id && item.owner === owner));
+    saveLocalSnapshot(remaining);
+    savedItems = remaining.filter(item => item.owner === owner);
+    refreshLessonChoices();
     renderWordList();
     showRandomQuiz(false);
     // GASが設定されていれば同期（失敗してもローカルはすでに削除済み）
     const endpoint = saveEndpoint();
     if (endpoint) {
       try {
-        await getToGas(endpoint, { action: "delete", id });
+        await postToGas(endpoint, { action: "delete", owner: getCurrentOwner(), id });
       } catch (error) {
         console.error(error);
         alert(`ローカルから削除しました。GAS側の削除に失敗しました。URLを確認してください。\n\nエラー：${error.message}`);
+      }
+    }
+  }
+
+  async function saveSavedItemEdit(id, values) {
+    const owner = getCurrentOwner();
+    const word = (values.word || "").trim();
+    if (!word) {
+      alert("英単語を入力してください。");
+      return;
+    }
+
+    const updatedItem = {
+      ...savedItems.find((item) => item.id === id),
+      lesson: normalizeLesson(values.lesson || ""),
+      word,
+      pos: (values.pos || "").trim() || detectPos(word),
+      meaning: (values.meaning || "").trim(),
+      context: (values.context || "").trim(),
+      contextJa: (values.contextJa || "").trim(),
+      owner
+    };
+
+    const allItems = getLocalItems().map((item) => (
+      item.id === id && item.owner === owner ? updatedItem : item
+    ));
+    saveLocalSnapshot(allItems);
+    savedItems = allItems.filter((item) => item.owner === owner);
+    editingSavedItemId = null;
+    refreshLessonChoices();
+    renderWordList();
+    showRandomQuiz(false);
+
+    const endpoint = saveEndpoint();
+    if (endpoint) {
+      try {
+        await postToGas(endpoint, { action: "update", owner, item: updatedItem });
+        await loadSavedItems();
+      } catch (error) {
+        console.error(error);
+        alert(`端末内では更新しました。GAS側の更新に失敗しました。URLを確認してください。\n\nエラー：${error.message}`);
       }
     }
   }
@@ -1149,12 +1448,12 @@
     const query = els.searchInput.value.trim().toLowerCase();
     let sortedItems = [...savedItems];
 
-    // ソート�E琁E
+    // ソート処理
     sortedItems.sort((a, b) => {
       let valA = a[sortConfig.key] || "";
       let valB = b[sortConfig.key] || "";
       
-      // ID�E�E�E�E�E�E�E�通し番号用�E�E�E�E�E�E�E�また�E日付�E特別な処琁E
+      // No. は現在の表示順を基準にする
       if (sortConfig.key === "id") {
          const idxA = savedItems.indexOf(a);
          const idxB = savedItems.indexOf(b);
@@ -1170,7 +1469,7 @@
     });
 
     const items = sortedItems.filter((item) => {
-      const text = `${item.word} ${item.meaning} ${item.context} ${item.contextJa}`.toLowerCase();
+      const text = `${item.lesson || ""} ${item.word} ${item.meaning} ${item.context} ${item.contextJa} ${item.owner || ""}`.toLowerCase();
       return !query || text.includes(query);
     });
 
@@ -1178,22 +1477,90 @@
     els.wordList.innerHTML = "";
 
     if (!items.length) {
-      els.wordList.innerHTML = `<tr><td colspan="7" class="empty-msg">保存した単語がありません${query ? "(検索結果ゼロ)" : ""}</td></tr>`;
+      els.wordList.innerHTML = `<tr><td colspan="8" class="empty-msg">保存した単語がありません${query ? "(検索結果ゼロ)" : ""}</td></tr>`;
       return;
     }
 
     items.forEach((item, index) => {
       const tr = document.createElement("tr");
+      if (editingSavedItemId === item.id) {
+        tr.className = "is-editing";
+        tr.innerHTML = `
+          <td class="col-id">${index + 1}</td>
+          <td class="col-lesson">
+            <select class="table-input edit-lesson-select">
+              <option value="">未指定</option>
+              ${DEFAULT_LESSONS.map((lesson) => `<option value="${escapeHtml(lesson)}">${escapeHtml(lesson)}</option>`).join("")}
+              <option value="${CUSTOM_LESSON_VALUE}">その他</option>
+            </select>
+            <input class="table-input edit-lesson-custom" type="text" list="lessonOptions" placeholder="レッスン名" hidden>
+          </td>
+          <td class="col-word"><input class="table-input edit-word" type="text"></td>
+          <td class="col-pos"><input class="table-input edit-pos" type="text"></td>
+          <td class="col-meaning"><textarea class="table-input table-textarea edit-meaning"></textarea></td>
+          <td class="col-context">
+            <textarea class="table-input table-textarea edit-context"></textarea>
+            <textarea class="table-input table-textarea edit-context-ja" placeholder="例文の日本語訳"></textarea>
+          </td>
+          <td class="col-date">${formatDate(item.createdAt)}</td>
+          <td class="col-actions">
+            <div class="edit-actions">
+              <button class="btn-save save-edit-btn" type="button">保存</button>
+              <button class="btn-cancel cancel-edit-btn" type="button">取消</button>
+            </div>
+          </td>
+        `;
+
+        const lessonSelect = tr.querySelector(".edit-lesson-select");
+        const customLessonInput = tr.querySelector(".edit-lesson-custom");
+        setLessonEditControls(lessonSelect, customLessonInput, item.lesson || "");
+        lessonSelect.addEventListener("change", () => updateLessonEditCustomVisibility(lessonSelect, customLessonInput, true));
+        tr.querySelector(".edit-word").value = item.word || "";
+        tr.querySelector(".edit-pos").value = item.pos || "";
+        tr.querySelector(".edit-meaning").value = item.meaning || "";
+        tr.querySelector(".edit-context").value = item.context || "";
+        tr.querySelector(".edit-context-ja").value = item.contextJa || "";
+        tr.querySelector(".save-edit-btn").addEventListener("click", () => {
+          saveSavedItemEdit(item.id, {
+            lesson: getLessonEditValue(lessonSelect, customLessonInput),
+            word: tr.querySelector(".edit-word").value,
+            pos: tr.querySelector(".edit-pos").value,
+            meaning: tr.querySelector(".edit-meaning").value,
+            context: tr.querySelector(".edit-context").value,
+            contextJa: tr.querySelector(".edit-context-ja").value
+          });
+        });
+        tr.querySelector(".cancel-edit-btn").addEventListener("click", () => {
+          editingSavedItemId = null;
+          renderWordList();
+        });
+        els.wordList.appendChild(tr);
+        return;
+      }
+
       tr.innerHTML = `
         <td class="col-id">${index + 1}</td>
+        <td class="col-lesson">${escapeHtml(item.lesson || "-")}</td>
         <td class="col-word">${escapeHtml(item.word)}</td>
         <td class="col-pos">${escapeHtml(item.pos || "-")}</td>
         <td class="col-meaning">${escapeHtml(item.meaning || "")}</td>
         <td class="col-context">${highlightWord(escapeHtml(item.context || ""), item.word)}</td>
         <td class="col-date">${formatDate(item.createdAt)}</td>
-        <td class="col-actions"><button class="btn-delete delete-btn" type="button">削除</button></td>
+        <td class="col-actions">
+          <div class="row-actions">
+            <button class="btn-edit edit-btn" type="button">編集</button>
+            <button class="btn-delete delete-btn" type="button">削除</button>
+          </div>
+        </td>
       `;
 
+        const editBtn = tr.querySelector(".edit-btn");
+        if (editBtn) {
+          editBtn.addEventListener("click", () => {
+            editingSavedItemId = item.id;
+            renderWordList();
+          });
+        }
         const delBtn = tr.querySelector(".delete-btn");
         if (delBtn) {
           delBtn.addEventListener("click", () => deleteSavedItem(item.id));
@@ -1202,40 +1569,392 @@
     });
   }
 
-  function showRandomQuiz(forceNew = true) {
+  function showRandomQuiz() {
+    clearQuizAutoNext();
+    quizSession = null;
+    els.nextQuizBtn.hidden = true;
+    setQuizHeaderAction("start");
+    const scope = els.quizScope.value;
+    const pool = getQuizPool(scope);
+
     if (!savedItems.length) {
       els.quizBox.className = "quiz-box empty-state";
-      els.quizBox.innerHTML = "<p>単語を保存すると、文脈から意味を思い出すクイズができます</p>";
+      els.quizBox.innerHTML = "<p>単語を保存すると、4択クイズで復習できます</p>";
       return;
     }
 
-    if (forceNew || !quizItem) {
-      quizItem = savedItems[Math.floor(Math.random() * savedItems.length)];
+    if (!pool.length) {
+      els.quizBox.className = "quiz-box empty-state";
+      els.quizBox.innerHTML = '<p>' + escapeHtml(getQuizRangeLabel(scope, getSelectedQuizLesson())) + 'に当てはまる単語はありません</p>';
+      return;
     }
 
     els.quizBox.className = "quiz-box";
     els.quizBox.innerHTML = `
+      <div class="quiz-card quiz-start-card">
+        <div class="quiz-summary">
+          <span>${escapeHtml(getQuizRangeLabel(scope, getSelectedQuizLesson()))}</span>
+          <strong>${pool.length}語</strong>
+        </div>
+        <p class="quiz-context">保存した意味から正しい答えを選ぶ4択クイズです。1回につき最大10問出題します。</p>
+        <button id="quizStartInlineBtn" class="button primary" type="button">この範囲で開始</button>
+      </div>
+    `;
+    $("quizStartInlineBtn").addEventListener("click", () => startQuizSession());
+  }
+
+  function startQuizSession(retryItems) {
+    clearQuizAutoNext();
+    const scope = els.quizScope.value;
+    const pool = Array.isArray(retryItems) ? retryItems : getQuizPool(scope);
+    const questions = shuffle(pool).slice(0, Math.min(10, pool.length));
+
+    if (!questions.length) {
+      showRandomQuiz(false);
+      return;
+    }
+
+    quizSession = {
+      scope,
+      lesson: getSelectedQuizLesson(),
+      questions,
+      index: 0,
+      answers: [],
+      answered: false,
+      choices: []
+    };
+    setQuizHeaderAction("home");
+    els.nextQuizBtn.hidden = false;
+    renderQuizQuestion();
+  }
+
+  function renderQuizQuestion() {
+    clearQuizAutoNext();
+    if (!quizSession) {
+      showRandomQuiz(false);
+      return;
+    }
+
+    const item = quizSession.questions[quizSession.index];
+    quizSession.answered = false;
+    quizSession.choices = buildAnswerChoices(item);
+    els.nextQuizBtn.disabled = true;
+
+    els.quizBox.className = "quiz-box";
+    els.quizBox.innerHTML = `
       <div class="quiz-card">
-        <p class="quiz-word">${escapeHtml(quizItem.word)}</p>
-        <p class="quiz-context">${highlightWord(escapeHtml(quizItem.context || ""), quizItem.word)}</p>
-        <button id="showAnswerBtn" class="button secondary" type="button">答えを表示</button>
-        <div id="quizAnswer" class="quiz-answer">
-          <strong>日本語の意味</strong>
-          <p>${escapeHtml(quizItem.meaning || "意味なし")}</p>
-          <strong>英文の日本語訳</strong>
-          <p>${escapeHtml(quizItem.contextJa || "日本語訳なし")}</p>
+        <div class="quiz-progress">
+          <span>${quizSession.index + 1} / ${quizSession.questions.length}</span>
+          <span>${escapeHtml(getQuizRangeLabel(quizSession.scope, quizSession.lesson))}</span>
+        </div>
+        <p class="quiz-word">${escapeHtml(item.word)}</p>
+        <p class="quiz-context">${highlightWord(escapeHtml(item.context || ""), item.word)}</p>
+        <div class="quiz-options">
+          ${quizSession.choices.map((choice, index) => `
+            <button class="quiz-option" type="button" data-index="${index}">${escapeHtml(choice)}</button>
+          `).join("")}
+        </div>
+        <div id="quizFeedback" class="quiz-feedback" aria-live="polite"></div>
+      </div>
+    `;
+
+    els.quizBox.querySelectorAll(".quiz-option").forEach((button) => {
+      button.addEventListener("click", () => answerQuiz(Number(button.dataset.index)));
+    });
+  }
+
+  function answerQuiz(choiceIndex) {
+    if (!quizSession || quizSession.answered) return;
+
+    const item = quizSession.questions[quizSession.index];
+    const selected = quizSession.choices[choiceIndex];
+    const correctAnswer = getMeaningLabel(item);
+    const isCorrect = selected === correctAnswer;
+    quizSession.answered = true;
+    quizSession.answers.push({ item, selected, correctAnswer, isCorrect });
+    recordQuizResult(item, isCorrect);
+
+    els.quizBox.querySelectorAll(".quiz-option").forEach((button) => {
+      const choice = quizSession.choices[Number(button.dataset.index)];
+      button.disabled = true;
+      if (choice === correctAnswer) button.classList.add("is-correct");
+      if (choice === selected && !isCorrect) button.classList.add("is-wrong");
+    });
+
+    const feedback = $("quizFeedback");
+    feedback.className = 'quiz-feedback ' + (isCorrect ? 'is-correct' : 'is-wrong');
+    feedback.innerHTML = `
+      <strong>${isCorrect ? "正解" : "不正解"}</strong>
+      <p>意味: ${escapeHtml(correctAnswer)}</p>
+      <p>${escapeHtml(item.contextJa || "日本語訳なし")}</p>
+    `;
+    els.nextQuizBtn.disabled = false;
+    scheduleQuizAutoNext(isCorrect);
+  }
+
+  function advanceQuiz() {
+    clearQuizAutoNext();
+    if (!quizSession) {
+      startQuizSession();
+      return;
+    }
+    if (!quizSession.answered) return;
+
+    if (quizSession.index >= quizSession.questions.length - 1) {
+      renderQuizResults();
+      return;
+    }
+
+    quizSession.index += 1;
+    renderQuizQuestion();
+  }
+
+  function renderQuizResults() {
+    if (!quizSession) return;
+    clearQuizAutoNext();
+
+    const answers = quizSession.answers;
+    const correctCount = answers.filter((answer) => answer.isCorrect).length;
+    const wrongAnswers = answers.filter((answer) => !answer.isCorrect);
+    els.nextQuizBtn.hidden = true;
+    setQuizHeaderAction("start");
+
+    els.quizBox.className = "quiz-box";
+    els.quizBox.innerHTML = `
+      <div class="quiz-card quiz-result-card">
+        <div class="quiz-score">
+          <span>結果</span>
+          <strong>${correctCount} / ${answers.length}</strong>
+        </div>
+        <div class="quiz-result-actions">
+          <button id="retryWrongBtn" class="button secondary" type="button" ${wrongAnswers.length ? "" : "disabled"}>間違えた単語を再挑戦</button>
+          <button id="restartQuizBtn" class="button primary" type="button">同じ範囲でもう一度</button>
+        </div>
+        <div class="quiz-review-list">
+          ${answers.map((answer) => `
+            <article class="quiz-review-item ${answer.isCorrect ? "is-correct" : "is-wrong"}">
+              <strong>${escapeHtml(answer.item.word)}</strong>
+              <span>${answer.isCorrect ? "正解" : "不正解"}</span>
+              <p>${escapeHtml(answer.correctAnswer)}</p>
+            </article>
+          `).join("")}
         </div>
       </div>
     `;
-    $("showAnswerBtn").addEventListener("click", () => {
-      $("quizAnswer").classList.toggle("is-open");
+
+    $("retryWrongBtn").addEventListener("click", () => {
+      if (wrongAnswers.length) startQuizSession(wrongAnswers.map((answer) => answer.item));
     });
+    $("restartQuizBtn").addEventListener("click", () => startQuizSession());
+    renderWordList();
+  }
+
+  function setQuizHeaderAction(action) {
+    if (!els.startQuizBtn) return;
+    const isHome = action === "home";
+    els.startQuizBtn.dataset.quizAction = isHome ? "home" : "start";
+    els.startQuizBtn.textContent = isHome ? "ホームに戻る" : "開始";
+    els.startQuizBtn.hidden = !isHome;
+    els.startQuizBtn.classList.toggle("return-home-btn", isHome);
+  }
+
+  function getQuizAutoNextPreference() {
+    return localStorage.getItem(QUIZ_AUTO_NEXT_KEY) !== "0";
+  }
+
+  function scheduleQuizAutoNext(isCorrect) {
+    if (!els.quizAutoNext || !els.quizAutoNext.checked || !quizSession) return;
+
+    const isLastQuestion = quizSession.index >= quizSession.questions.length - 1;
+    const delayMs = isCorrect ? 3000 : 5200;
+    const targetLabel = isLastQuestion ? "結果へ" : "次の問題へ";
+    const feedback = $("quizFeedback");
+
+    if (feedback) {
+      const autoNote = document.createElement("div");
+      autoNote.className = "quiz-auto-next-note";
+      autoNote.innerHTML = `
+        <div class="quiz-auto-countdown" aria-live="polite">
+          <span class="quiz-countdown-number"></span>
+          <span>秒後に${targetLabel}</span>
+        </div>
+        <button id="pauseAutoNextBtn" class="pause-auto-next-btn" type="button">停止</button>
+      `;
+      feedback.appendChild(autoNote);
+      const pauseBtn = $("pauseAutoNextBtn");
+      if (pauseBtn) pauseBtn.addEventListener("click", clearQuizAutoNext);
+
+      const countdownNumber = autoNote.querySelector(".quiz-countdown-number");
+      const deadline = Date.now() + delayMs;
+      const updateCountdown = () => {
+        const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+        if (countdownNumber) countdownNumber.textContent = String(remainingSeconds);
+      };
+      updateCountdown();
+      quizAutoNextInterval = window.setInterval(updateCountdown, 250);
+    }
+
+    quizAutoNextTimer = window.setTimeout(() => {
+      quizAutoNextTimer = null;
+      advanceQuiz();
+    }, delayMs);
+  }
+
+  function clearQuizAutoNext() {
+    if (quizAutoNextTimer) {
+      window.clearTimeout(quizAutoNextTimer);
+      quizAutoNextTimer = null;
+    }
+    if (quizAutoNextInterval) {
+      window.clearInterval(quizAutoNextInterval);
+      quizAutoNextInterval = null;
+    }
+    const note = document.querySelector(".quiz-auto-next-note");
+    if (note) {
+      note.innerHTML = "<span>自動送りを停止しました</span>";
+    }
+  }
+
+  function getQuizPool(scope) {
+    const lesson = getSelectedQuizLesson();
+    const items = savedItems.filter((item) => {
+      if (!getMeaningLabel(item)) return false;
+      return lesson === "all" || normalizeLesson(item.lesson || "") === lesson;
+    });
+    if (scope === "unreviewed") return items.filter((item) => getReviewStatsForItem(item).reviewCount === 0);
+    if (scope === "wrong") return items.filter((item) => isWrongReviewItem(item));
+    if (scope === "recent") return [...items].sort((a, b) => getTime(b.createdAt) - getTime(a.createdAt)).slice(0, 20);
+    if (scope === "weak") return [...items]
+      .filter((item) => getWeakScore(item) > 0)
+      .sort((a, b) => getWeakScore(b) - getWeakScore(a));
+    return items;
+  }
+
+  function getSelectedQuizLesson() {
+    return els.quizLesson ? els.quizLesson.value : "all";
+  }
+
+  function buildAnswerChoices(item) {
+    const correct = getMeaningLabel(item);
+    const choices = [correct];
+    const otherMeanings = shuffle(savedItems
+      .map(getMeaningLabel)
+      .filter((meaning) => meaning && meaning !== correct));
+
+    otherMeanings.forEach((meaning) => {
+      if (choices.length < 4 && !choices.includes(meaning)) choices.push(meaning);
+    });
+
+    ["文脈から判断する", "まだ意味が登録されていません", "別の意味"].forEach((fallback) => {
+      if (choices.length < 4 && !choices.includes(fallback) && fallback !== correct) choices.push(fallback);
+    });
+
+    return shuffle(choices).slice(0, 4);
+  }
+
+  function recordQuizResult(item, isCorrect) {
+    const stats = getAllReviewStats();
+    const key = getReviewKey(item);
+    const current = stats[key] || createEmptyReviewStats();
+    const correctStreak = isCorrect ? current.correctStreak + 1 : 0;
+    stats[key] = {
+      ...current,
+      reviewCount: current.reviewCount + 1,
+      correctCount: current.correctCount + (isCorrect ? 1 : 0),
+      wrongCount: current.wrongCount + (isCorrect ? 0 : 1),
+      correctStreak,
+      lastResult: isCorrect ? "correct" : "wrong",
+      lastReviewedAt: new Date().toISOString(),
+      needsReview: isCorrect ? current.needsReview && correctStreak < 2 : true,
+      weakScore: Math.max(0, current.weakScore + (isCorrect ? -1 : 2))
+    };
+    saveAllReviewStats(stats);
+  }
+
+  function getAllReviewStats() {
+    try {
+      return JSON.parse(localStorage.getItem(REVIEW_STORAGE_KEY) || "{}");
+    } catch {
+      return {};
+    }
+  }
+
+  function saveAllReviewStats(stats) {
+    localStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(stats));
+  }
+
+  function getReviewStatsForItem(item) {
+    return getAllReviewStats()[getReviewKey(item)] || createEmptyReviewStats();
+  }
+
+  function createEmptyReviewStats() {
+    return {
+      reviewCount: 0,
+      correctCount: 0,
+      wrongCount: 0,
+      correctStreak: 0,
+      lastResult: "",
+      lastReviewedAt: "",
+      needsReview: false,
+      weakScore: 0
+    };
+  }
+
+  function getReviewKey(item) {
+    const owner = item.owner || getCurrentOwner() || DEFAULT_OWNER;
+    const id = item.id || (String(item.word || "") + "|" + String(item.context || ""));
+    return owner + "|" + id;
+  }
+
+  function isWrongReviewItem(item) {
+    const stats = getReviewStatsForItem(item);
+    return stats.needsReview || stats.lastResult === "wrong";
+  }
+
+  function getWeakScore(item) {
+    const stats = getReviewStatsForItem(item);
+    return stats.weakScore + (stats.needsReview ? 1 : 0);
+  }
+
+  function getMeaningLabel(item) {
+    return String(item.meaning || "").trim() || "意味なし";
+  }
+
+  function getScopeLabel(scope) {
+    const labels = {
+      all: "すべての単語",
+      wrong: "間違えた単語だけ",
+      unreviewed: "未復習の単語だけ",
+      recent: "最近追加した単語",
+      weak: "苦手度が高い単語"
+    };
+    return labels[scope] || labels.all;
+  }
+
+  function getQuizRangeLabel(scope, lesson) {
+    const lessonLabel = lesson && lesson !== "all" ? lesson : "すべてのレッスン";
+    return `${lessonLabel} / ${getScopeLabel(scope)}`;
+  }
+
+  function getTime(value) {
+    const time = new Date(value || 0).getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+
+  function shuffle(items) {
+    const result = [...items];
+    for (let i = result.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
   }
 
   function exportCsv() {
     const rows = [
-      ["word", "meaning", "context", "contextJa", "createdAt", "source"],
+      ["lesson", "word", "meaning", "context", "contextJa", "createdAt", "source"],
       ...savedItems.map((item) => [
+        item.lesson,
         item.word,
         item.meaning,
         item.context,
@@ -1260,9 +1979,54 @@
   }
 
   function highlightWord(text, word) {
-    const clean = escapeRegExp(word || "");
+    const clean = String(word || "").trim().replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
     if (!clean || !text) return text;
-    return text.replace(new RegExp(`\\b(${clean})\\b`, "gi"), '<span class="highlighted-word">$1</span>');
+
+    const rawParts = clean.split(/\s+/).filter(Boolean);
+    const parts = rawParts.map(escapeRegExp);
+    if (!parts.length) return text;
+
+    const phrase = rawParts.length === 1
+      ? buildHighlightWordForms(rawParts[0]).map(escapeRegExp).join("|")
+      : parts.join("\\s+");
+    const startsWithWord = /^[A-Za-z0-9]/.test(clean);
+    const endsWithWord = /[A-Za-z0-9]$/.test(clean);
+    const prefix = startsWithWord ? "(^|[^A-Za-z0-9])" : "";
+    const suffix = endsWithWord ? "(?=$|[^A-Za-z0-9])" : "";
+    const pattern = new RegExp(`${prefix}(${phrase})${suffix}`, "gi");
+
+    return text.replace(pattern, (match, before, matchedWord) => {
+      if (startsWithWord) return `${before}<span class="highlighted-word">${matchedWord}</span>`;
+      return `<span class="highlighted-word">${match}</span>`;
+    });
+  }
+
+  function buildHighlightWordForms(word) {
+    const base = String(word || "").trim();
+    if (!/^[A-Za-z]+$/.test(base)) return [base];
+
+    const lower = base.toLowerCase();
+    const forms = new Set([base]);
+    const addWithCase = (suffixForm) => {
+      forms.add(base === lower ? suffixForm : suffixForm.replace(lower, base));
+    };
+
+    addWithCase(lower + "s");
+    addWithCase(lower + "es");
+    addWithCase(lower + "ed");
+    addWithCase(lower + "ing");
+
+    if (lower.endsWith("y") && !/[aeiou]y$/.test(lower)) {
+      addWithCase(lower.slice(0, -1) + "ies");
+      addWithCase(lower.slice(0, -1) + "ied");
+    }
+
+    if (lower.endsWith("e")) {
+      addWithCase(lower + "d");
+      addWithCase(lower.slice(0, -1) + "ing");
+    }
+
+    return [...forms].sort((a, b) => b.length - a.length);
   }
 
   function escapeHtml(value) {
@@ -1300,3 +2064,5 @@
     els.ocrStatus.textContent = text;
   }
 })();
+
+
