@@ -1,0 +1,248 @@
+﻿<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LexiLight OCR</title>
+  <link rel="stylesheet" href="styles.css?v=20260706">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+  <script src="app.js?v=20260706" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <p class="eyebrow">Scan Highlights into Vocabulary</p>
+      <h1 aria-label="LexiLight OCR"><span class="brand-main">LexiLight</span> <span class="brand-suffix">OCR</span></h1>
+    </div>
+    <nav class="app-tabs">
+      <button class="tab-btn active" data-target="tab-ocr">OCR抽出</button>
+      <button class="tab-btn" data-target="tab-list">単語一覧</button>
+      <button class="tab-btn" data-target="tab-quiz">復習</button>
+    </nav>
+    <div class="header-actions">
+      <div class="user-field" aria-live="polite">
+        <span>利用者</span>
+        <strong id="ownerLabel">未登録</strong>
+      </div>
+      <button id="changeOwnerBtn" class="mini-button" type="button">変更</button>
+      <button id="refreshListBtn" class="icon-button" type="button" title="一覧を更新" aria-label="一覧を更新">
+        <span aria-hidden="true">↻</span>
+      </button>
+      <button id="exportCsvBtn" class="button secondary" type="button">CSV出力</button>
+    </div>
+  </header>
+
+  <div id="ownerSetup" class="owner-setup" hidden>
+    <section class="owner-dialog" role="dialog" aria-modal="true" aria-labelledby="ownerSetupTitle">
+      <p class="eyebrow">Profile</p>
+      <h2 id="ownerSetupTitle">利用者を登録</h2>
+      <label class="field">
+        <span>氏名またはID</span>
+        <input id="ownerInput" type="text" autocomplete="name" placeholder="例：山田、生徒A、student-a">
+      </label>
+      <button id="saveOwnerBtn" class="button primary" type="button">登録して始める</button>
+    </section>
+  </div>
+
+  <main class="app-shell">
+    <div id="tab-ocr" class="tab-pane active">
+      <section id="uploadPanel" class="panel upload-panel" aria-labelledby="uploadTitle">
+      <div class="section-title">
+        <div>
+          <h2 id="uploadTitle">画像からハイライトを読む</h2>
+        </div>
+        <div class="status-pill" id="ocrStatus">待機中</div>
+      </div>
+
+      <div id="dropZone" class="drop-zone" tabindex="0">
+        <input id="imageInput" type="file" accept="image/*">
+        <div class="drop-copy">
+          <strong>画像を選択、ドラッグ、または貼り付け</strong>
+          <span>黄色でハイライトしたスクリーンショットをそのまま使えます</span>
+        </div>
+        <button id="chooseImageBtn" class="button" type="button">画像を選ぶ</button>
+      </div>
+
+      <div class="canvas-wrap" id="previewWrap" hidden>
+        <canvas id="imageCanvas"></canvas>
+      </div>
+
+      <div class="tool-row">
+        <label class="field compact">
+          <span>OCR言語</span>
+          <select id="ocrLang">
+            <option value="eng" selected>英語</option>
+            <option value="eng+jpn">英語＋日本語</option>
+          </select>
+        </label>
+        <label class="field compact">
+          <span>ハイライト検出</span>
+          <select id="highlightSensitivity">
+            <option value="normal" selected>標準</option>
+            <option value="strict">厳しめ</option>
+            <option value="loose">緩め</option>
+          </select>
+        </label>
+        <button id="readingZoneBtn" class="button secondary" type="button" disabled title="画像上でドラッグして読み取りエリアを指定します（指定なしの場合は全体が対象です）">読み取りエリア設定</button>
+        <button id="clearReadingBtn" class="button" type="button" hidden>エリアクリア</button>
+        <button id="clearImageBtn" class="button" type="button" hidden>画像クリア</button>
+        <button id="runOcrBtn" class="button primary" type="button" disabled>抽出する</button>
+      </div>
+    </section>
+
+    <section class="panel review-panel" aria-labelledby="reviewTitle">
+      <div class="section-title">
+        <div>
+          <h2 id="reviewTitle">抽出結果を確認して保存</h2>
+        </div>
+        <span id="detectedCount" class="muted">0件</span>
+      </div>
+
+      <div id="resultsList" class="results-list empty-state">
+        <p>画像を読み込むと、黄色ハイライト上の単語がここに表示されます</p>
+      </div>
+
+      <div class="save-bar">
+        <label class="field lesson-field">
+          <span>レッスン</span>
+          <select id="lessonSelect">
+            <option value="" selected>未指定</option>
+            <option value="Unit 1">Unit 1</option>
+            <option value="Unit 2">Unit 2</option>
+            <option value="Unit 3">Unit 3</option>
+            <option value="Unit 4">Unit 4</option>
+            <option value="Unit 5">Unit 5</option>
+            <option value="Unit 6">Unit 6</option>
+            <option value="Unit 7">Unit 7</option>
+            <option value="Unit 8">Unit 8</option>
+            <option value="__custom__">その他</option>
+          </select>
+          <input id="customLessonInput" type="text" list="lessonOptions" placeholder="レッスン名を入力" hidden>
+          <datalist id="lessonOptions">
+            <option value="Unit 1"></option>
+            <option value="Unit 2"></option>
+            <option value="Unit 3"></option>
+            <option value="Unit 4"></option>
+            <option value="Unit 5"></option>
+            <option value="Unit 6"></option>
+            <option value="Unit 7"></option>
+            <option value="Unit 8"></option>
+          </datalist>
+        </label>
+        <button id="saveAllBtn" class="button primary" type="button" disabled>単語帳に追加</button>
+      </div>
+    </section>
+    </div>
+
+    <div id="tab-list" class="tab-pane">
+      <section class="panel list-panel" aria-labelledby="listTitle">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">Vocabulary</p>
+          <h2 id="listTitle">単語一覧</h2>
+        </div>
+        <div class="list-actions">
+          <input id="searchInput" class="search-input" type="search" placeholder="単語・文脈で検索">
+          <button id="clearListBtn" class="button danger compact-button" type="button">データ全消去</button>
+        </div>
+      </div>
+      <div class="table-container">
+        <table id="wordTable" class="word-table">
+          <thead>
+            <tr>
+              <th data-sort="id">No. <span class="sort-icon"></span></th>
+              <th data-sort="lesson">レッスン <span class="sort-icon"></span></th>
+              <th data-sort="word">英単語 <span class="sort-icon"></span></th>
+              <th data-sort="pos">品詞 <span class="sort-icon"></span></th>
+              <th data-sort="meaning">意味 <span class="sort-icon"></span></th>
+              <th data-sort="context">例文 <span class="sort-icon"></span></th>
+              <th data-sort="createdAt">追加日時 <span class="sort-icon"></span></th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="wordList" class="empty-state">
+            <tr><td colspan="8" class="empty-msg">保存した単語がここに並びます</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    </div>
+
+    <div id="tab-quiz" class="tab-pane">
+      <section class="panel quiz-panel" aria-labelledby="quizTitle">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">Review</p>
+          <h2 id="quizTitle">復習クイズ</h2>
+        </div>
+        <div class="quiz-actions">
+          <label class="field compact">
+            <span>出題範囲</span>
+            <select id="quizScope">
+              <option value="all" selected>すべての単語</option>
+              <option value="wrong">間違えた単語だけ</option>
+              <option value="unreviewed">未復習の単語だけ</option>
+              <option value="recent">最近追加した単語</option>
+              <option value="weak">苦手度が高い単語</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>レッスン</span>
+            <select id="quizLesson">
+              <option value="all" selected>すべて</option>
+              <option value="Unit 1">Unit 1</option>
+              <option value="Unit 2">Unit 2</option>
+              <option value="Unit 3">Unit 3</option>
+              <option value="Unit 4">Unit 4</option>
+              <option value="Unit 5">Unit 5</option>
+              <option value="Unit 6">Unit 6</option>
+              <option value="Unit 7">Unit 7</option>
+              <option value="Unit 8">Unit 8</option>
+            </select>
+          </label>
+          <label class="quiz-auto-toggle">
+            <input id="quizAutoNext" type="checkbox" checked>
+            <span>自動送り</span>
+          </label>
+          <button id="startQuizBtn" class="button primary" type="button" hidden>開始</button>
+          <button id="nextQuizBtn" class="icon-button" type="button" title="次の問題" aria-label="次の問題">
+            <span aria-hidden="true">→</span>
+          </button>
+        </div>
+      </div>
+      <div id="quizBox" class="quiz-box empty-state">
+        <p>単語を保存すると、文脈から意味を思い出すクイズができます</p>
+      </div>
+    </section>
+    </div>
+  </main>
+
+  <template id="resultTemplate">
+    <article class="result-card">
+      <div class="card-head">
+        <div class="word-edit-wrap" title="クリックして誤りを修正できます">
+          <input class="word-input" type="text" aria-label="英単語" spellcheck="true" lang="en">
+          <span class="edit-hint" aria-hidden="true" title="クリックして編集">✏</span>
+        </div>
+        <div class="pos-input-wrap"><input class="pos-input" type="text" aria-label="品詞" placeholder="品詞"></div><button class="icon-button remove-result" type="button" title="削除" aria-label="削除">×</button>
+      </div>
+      <label class="field">
+        <span>出てきた英文</span>
+        <textarea class="context-input" rows="3"></textarea>
+      </label>
+      <label class="field">
+        <span>英文の日本語訳</span>
+        <textarea class="context-ja-input" rows="3" placeholder="自動翻訳されます！"></textarea>
+      </label>
+      <label class="field">
+        <span>日本語の意味</span>
+        <input class="meaning-input" type="text" placeholder="自動入力されます！">
+      </label>
+      <div class="meta-row">
+        <span class="confidence"></span>
+        <span class="source-note"></span>
+      </div>
+    </article>
+  </template>
+</body>
+</html>
