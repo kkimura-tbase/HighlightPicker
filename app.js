@@ -41,6 +41,7 @@
     searchInput: $("searchInput"),
     refreshListBtn: $("refreshListBtn"),
     exportCsvBtn: $("exportCsvBtn"),
+    quizMode: $("quizMode"),
     quizScope: $("quizScope"),
     quizLesson: $("quizLesson"),
     quizAutoNext: $("quizAutoNext"),
@@ -70,6 +71,7 @@
   let editingSavedItemId = null;
   let quizAutoNextTimer = null;
   let quizAutoNextInterval = null;
+  let quizTimerId = null;
   
   // ソート状態
   let sortConfig = { key: "createdAt", asc: false };
@@ -123,6 +125,7 @@
       startQuizSession();
     });
     els.nextQuizBtn.addEventListener("click", () => advanceQuiz());
+    if (els.quizMode) els.quizMode.addEventListener("change", () => showRandomQuiz(false));
     els.quizScope.addEventListener("change", () => showRandomQuiz(false));
     if (els.quizLesson) els.quizLesson.addEventListener("change", () => showRandomQuiz(false));
     if (els.quizAutoNext) {
@@ -1588,6 +1591,7 @@
 
   function showRandomQuiz() {
     clearQuizAutoNext();
+    clearQuizTimer();
     quizSession = null;
     els.nextQuizBtn.hidden = true;
     setQuizHeaderAction("start");
@@ -1606,14 +1610,20 @@
       return;
     }
 
+    const questionCount = pool.length;
+    const totalTime = questionCount * 3;
+    const isScoreMode = isQuizScoreMode();
     els.quizBox.className = "quiz-box";
     els.quizBox.innerHTML = `
       <div class="quiz-card quiz-start-card">
         <div class="quiz-summary">
           <span>${escapeHtml(getQuizRangeLabel(scope, getSelectedQuizLesson()))}</span>
-          <strong>${pool.length}語</strong>
+          <strong>${questionCount}問</strong>
         </div>
-        <p class="quiz-context">保存した意味から正しい答えを選ぶ4択クイズです。1回につき最大10問出題します。</p>
+        <p class="quiz-context">${isScoreMode
+          ? `制限時間${formatQuizTime(totalTime)}のスコアチャレンジです。時間内は問題が繰り返し出ます。`
+          : "保存した意味から正しい答えを選ぶ4択クイズです。時間を気にせず確認できます。"
+        }</p>
         <button id="quizStartInlineBtn" class="button primary" type="button">この範囲で開始</button>
       </div>
     `;
@@ -1622,9 +1632,12 @@
 
   function startQuizSession(retryItems) {
     clearQuizAutoNext();
+    clearQuizTimer();
     const scope = els.quizScope.value;
     const pool = Array.isArray(retryItems) ? retryItems : getQuizPool(scope);
-    const questions = shuffle(pool).slice(0, Math.min(10, pool.length));
+    const questions = shuffle(pool);
+    const mode = getSelectedQuizMode();
+    const totalTime = questions.length * 3;
 
     if (!questions.length) {
       showRandomQuiz(false);
@@ -1633,16 +1646,22 @@
 
     quizSession = {
       scope,
+      mode,
       lesson: getSelectedQuizLesson(),
       questions,
       index: 0,
       answers: [],
       answered: false,
-      choices: []
+      choices: [],
+      totalTime,
+      timeRemaining: totalTime,
+      deadline: Date.now() + (totalTime * 1000),
+      timedOut: false
     };
     setQuizHeaderAction("home");
-    els.nextQuizBtn.hidden = false;
+    els.nextQuizBtn.hidden = isQuizScoreMode(quizSession);
     renderQuizQuestion();
+    if (isQuizScoreMode(quizSession)) startQuizTimer();
   }
 
   function renderQuizQuestion() {
@@ -1662,6 +1681,7 @@
       <div class="quiz-card">
         <div class="quiz-progress">
           <span>${quizSession.index + 1} / ${quizSession.questions.length}</span>
+          ${isQuizScoreMode(quizSession) ? `<span id="quizTimer" class="quiz-timer">${formatQuizTime(quizSession.timeRemaining)}</span>` : ""}
           <span>${escapeHtml(getQuizRangeLabel(quizSession.scope, quizSession.lesson))}</span>
         </div>
         <p class="quiz-word">${escapeHtml(item.word)}</p>
@@ -1681,7 +1701,7 @@
   }
 
   function answerQuiz(choiceIndex) {
-    if (!quizSession || quizSession.answered) return;
+    if (!quizSession || quizSession.answered || (isQuizScoreMode(quizSession) && quizSession.timedOut)) return;
 
     const item = quizSession.questions[quizSession.index];
     const selected = quizSession.choices[choiceIndex];
@@ -1690,6 +1710,11 @@
     quizSession.answered = true;
     quizSession.answers.push({ item, selected, correctAnswer, isCorrect });
     recordQuizResult(item, isCorrect);
+
+    if (isQuizScoreMode(quizSession)) {
+      showScoreModeAnswerFlash(selected, correctAnswer, isCorrect);
+      return;
+    }
 
     els.quizBox.querySelectorAll(".quiz-option").forEach((button) => {
       const choice = quizSession.choices[Number(button.dataset.index)];
@@ -1707,6 +1732,39 @@
     `;
     els.nextQuizBtn.disabled = false;
     scheduleQuizAutoNext(isCorrect);
+  }
+
+  function showScoreModeAnswerFlash(selected, correctAnswer, isCorrect) {
+    if (!quizSession) return;
+
+    els.quizBox.querySelectorAll(".quiz-option").forEach((button) => {
+      const choice = quizSession.choices[Number(button.dataset.index)];
+      button.disabled = true;
+      if (choice === correctAnswer) button.classList.add("is-correct");
+      if (choice === selected && !isCorrect) button.classList.add("is-wrong");
+    });
+
+    const feedback = $("quizFeedback");
+    if (feedback) {
+      feedback.className = 'quiz-flash ' + (isCorrect ? 'is-correct' : 'is-wrong');
+      feedback.textContent = isCorrect ? "正解" : "不正解";
+    }
+
+    window.setTimeout(() => {
+      if (!quizSession || quizSession.timedOut) return;
+      advanceScoreModeQuestion();
+      renderQuizQuestion();
+    }, 360);
+  }
+
+  function advanceScoreModeQuestion() {
+    if (!quizSession) return;
+    if (quizSession.index >= quizSession.questions.length - 1) {
+      quizSession.questions = shuffle(quizSession.questions);
+      quizSession.index = 0;
+      return;
+    }
+    quizSession.index += 1;
   }
 
   function advanceQuiz() {
@@ -1729,10 +1787,13 @@
   function renderQuizResults() {
     if (!quizSession) return;
     clearQuizAutoNext();
+    clearQuizTimer();
 
     const answers = quizSession.answers;
     const correctCount = answers.filter((answer) => answer.isCorrect).length;
     const wrongAnswers = answers.filter((answer) => !answer.isCorrect);
+    const score = getQuizScoreSummary(quizSession);
+    const isScoreMode = isQuizScoreMode(quizSession);
     els.nextQuizBtn.hidden = true;
     setQuizHeaderAction("start");
 
@@ -1740,9 +1801,24 @@
     els.quizBox.innerHTML = `
       <div class="quiz-card quiz-result-card">
         <div class="quiz-score">
-          <span>結果</span>
-          <strong>${correctCount} / ${answers.length}</strong>
+          <span>${isScoreMode && quizSession.timedOut ? "時間切れ" : "結果"}</span>
+          <strong>${isScoreMode ? score.finalScore : `${correctCount} / ${quizSession.questions.length}`}</strong>
         </div>
+        ${isScoreMode ? `
+          <div class="quiz-score-breakdown">
+            <span>正解 ${correctCount}</span>
+            <span>回答 ${answers.length}</span>
+            <span>ミス ${score.wrongCount}</span>
+            <span>制限時間 ${formatQuizTime(score.totalTime)}</span>
+          </div>
+        ` : `
+          <div class="quiz-score-breakdown">
+            <span>正解 ${correctCount} / ${quizSession.questions.length}</span>
+            <span>ミス ${score.wrongCount}</span>
+            <span>学習モード</span>
+            <span>時間制限なし</span>
+          </div>
+        `}
         <div class="quiz-result-actions">
           <button id="retryWrongBtn" class="button secondary" type="button" ${wrongAnswers.length ? "" : "disabled"}>間違えた単語を再挑戦</button>
           <button id="restartQuizBtn" class="button primary" type="button">同じ範囲でもう一度</button>
@@ -1764,6 +1840,65 @@
     });
     $("restartQuizBtn").addEventListener("click", () => startQuizSession());
     renderWordList();
+  }
+
+  function startQuizTimer() {
+    if (!quizSession || !isQuizScoreMode(quizSession)) return;
+    updateQuizTimer();
+    quizTimerId = window.setInterval(updateQuizTimer, 250);
+  }
+
+  function updateQuizTimer() {
+    if (!quizSession || !isQuizScoreMode(quizSession)) {
+      clearQuizTimer();
+      return;
+    }
+
+    const remaining = Math.max(0, Math.ceil((quizSession.deadline - Date.now()) / 1000));
+    quizSession.timeRemaining = remaining;
+    const timer = $("quizTimer");
+    if (timer) {
+      timer.textContent = formatQuizTime(remaining);
+      timer.classList.toggle("is-danger", remaining <= 5);
+    }
+
+    if (remaining <= 0) {
+      quizSession.timedOut = true;
+      clearQuizAutoNext();
+      renderQuizResults();
+    }
+  }
+
+  function clearQuizTimer() {
+    if (quizTimerId) {
+      window.clearInterval(quizTimerId);
+      quizTimerId = null;
+    }
+  }
+
+  function getQuizScoreSummary(session) {
+    const answers = session.answers || [];
+    const correctCount = answers.filter((answer) => answer.isCorrect).length;
+    const wrongCount = answers.filter((answer) => !answer.isCorrect).length;
+    const totalTime = session.totalTime || ((session.questions || []).length * 3);
+    const baseScore = (correctCount * 100) - (wrongCount * 50);
+    const finalScore = totalTime > 0 ? Math.max(0, Math.round(baseScore * (60 / totalTime))) : 0;
+    return { correctCount, wrongCount, totalTime, baseScore, finalScore };
+  }
+
+  function getSelectedQuizMode() {
+    return els.quizMode ? els.quizMode.value : "study";
+  }
+
+  function isQuizScoreMode(session) {
+    return (session ? session.mode : getSelectedQuizMode()) === "score";
+  }
+
+  function formatQuizTime(seconds) {
+    const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+    const minutes = Math.floor(safeSeconds / 60);
+    const rest = String(safeSeconds % 60).padStart(2, "0");
+    return `${minutes}:${rest}`;
   }
 
   function setQuizHeaderAction(action) {
