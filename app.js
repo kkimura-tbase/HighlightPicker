@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
   "use strict";
 
   const STORAGE_KEY = "context-vocab-items-v1";
@@ -9,6 +9,58 @@
   const DEFAULT_OWNER = "";
   const DEFAULT_LESSONS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Unit 5", "Unit 6", "Unit 7", "Unit 8"];
   const CUSTOM_LESSON_VALUE = "__custom__";
+  const CONTEXTUAL_MEANINGS = {
+    sort: {
+      "動詞": "分類する、整理する",
+      "名詞": "種類、分類"
+    },
+    work: {
+      "動詞": "働く、機能する",
+      "名詞": "仕事、作品"
+    },
+    play: {
+      "動詞": "遊ぶ、演奏する",
+      "名詞": "遊び、劇"
+    },
+    run: {
+      "動詞": "走る、運営する",
+      "名詞": "走ること、連続"
+    },
+    change: {
+      "動詞": "変える、変わる",
+      "名詞": "変化、変更"
+    },
+    use: {
+      "動詞": "使う",
+      "名詞": "使用、用途"
+    },
+    help: {
+      "動詞": "助ける、役に立つ",
+      "名詞": "助け、手伝い"
+    },
+    point: {
+      "動詞": "指し示す",
+      "名詞": "点、要点"
+    },
+    form: {
+      "動詞": "形作る",
+      "名詞": "形、形式"
+    },
+    object: {
+      "動詞": "反対する",
+      "名詞": "物、目的語"
+    },
+    present: {
+      "動詞": "提示する",
+      "名詞": "現在、贈り物",
+      "形容詞": "出席している、現在の"
+    },
+    record: {
+      "動詞": "記録する",
+      "名詞": "記録"
+    }
+  };
+  const CONTEXTUAL_POS_WORDS = new Set(Object.keys(CONTEXTUAL_MEANINGS));
   // 教師側で端末ごとに固定したい場合だけ、任意の氏名またはIDを入れます。
   const FIXED_OWNER = "";
   // 管理者が固定のGAS URLを配布したい場合だけ、ここに /exec のURLを入れます。
@@ -33,6 +85,7 @@
     highlightSensitivity: $("highlightSensitivity"),
     resultsList: $("resultsList"),
     detectedCount: $("detectedCount"),
+    saveBar: $("saveBar"),
     lessonSelect: $("lessonSelect"),
     customLessonInput: $("customLessonInput"),
     lessonOptions: $("lessonOptions"),
@@ -42,12 +95,15 @@
     refreshListBtn: $("refreshListBtn"),
     exportCsvBtn: $("exportCsvBtn"),
     quizMode: $("quizMode"),
+    quizDirection: $("quizDirection"),
     quizScope: $("quizScope"),
     quizLesson: $("quizLesson"),
     quizAutoNext: $("quizAutoNext"),
     startQuizBtn: $("startQuizBtn"),
     nextQuizBtn: $("nextQuizBtn"),
     quizBox: $("quizBox"),
+    quizModeButtons: document.querySelectorAll(".quiz-mode-btn"),
+    quizDirectionButtons: document.querySelectorAll(".quiz-direction-btn"),
     resultTemplate: $("resultTemplate"),
     readingZoneBtn: $("readingZoneBtn"),
     clearReadingBtn: $("clearReadingBtn"),
@@ -59,6 +115,7 @@
   const ctx = els.canvas.getContext("2d");
   let imageBitmap = null;
   let detectedResults = [];
+  let saveNotice = null;
   let savedItems = [];
   let quizSession = null;
   let inclusionZones = [];
@@ -125,7 +182,20 @@
       startQuizSession();
     });
     els.nextQuizBtn.addEventListener("click", () => advanceQuiz());
-    if (els.quizMode) els.quizMode.addEventListener("change", () => showRandomQuiz(false));
+    if (els.quizMode) {
+      setupQuizModeButtons();
+      els.quizMode.addEventListener("change", () => {
+        updateQuizModeButtons();
+        showRandomQuiz(false);
+      });
+    }
+    if (els.quizDirection) {
+      setupQuizDirectionButtons();
+      els.quizDirection.addEventListener("change", () => {
+        updateQuizDirectionButtons();
+        showRandomQuiz(false);
+      });
+    }
     els.quizScope.addEventListener("change", () => showRandomQuiz(false));
     if (els.quizLesson) els.quizLesson.addEventListener("change", () => showRandomQuiz(false));
     if (els.quizAutoNext) {
@@ -343,6 +413,7 @@
   }
 
   async function loadImageFile(file) {
+    clearSaveNotice();
     setStatus("画像読込中");
     const url = URL.createObjectURL(file);
     try {
@@ -471,6 +542,7 @@
   }
 
   function clearImage() {
+    clearSaveNotice();
     imageBitmap = null;
     ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
     els.uploadPanel.classList.remove("has-image");
@@ -532,6 +604,7 @@
 
   async function runExtraction() {
     if (!imageBitmap) return;
+    clearSaveNotice();
     if (!window.Tesseract) {
       setStatus("OCR未読込");
       alert("Tesseract.jsを読み込めませんでした。インターネット接続を確認してから再読み込みしてください。");
@@ -780,13 +853,14 @@
       const baseWord = wordTokens.length === 1 ? lemmatize(text) : text;
       
       const context = findBestContext(text, sorted, lines, fullText);
+      const pos = detectPos(baseWord, context);
       found.push({
         id: makeId(),
         word: baseWord,
-        pos: detectPos(baseWord),
+        pos,
         context,
         contextJa: "",
-        meaning: "",
+        meaning: getContextualMeaning(baseWord, context, pos),
         confidence: Math.round(average(sorted.map((word) => word.confidence))),
         source: "OCR",
         createdAt: new Date().toISOString()
@@ -930,6 +1004,7 @@
       "buys": "buy", "bought": "buy",
       "wears": "wear", "wore": "wear", "worn": "wear",
       "chooses": "choose", "chose": "choose", "chosen": "choose",
+      "sorts": "sort", "sorted": "sort", "sorting": "sort",
       "children": "child",
       "men": "man",
       "women": "woman",
@@ -1025,11 +1100,23 @@
   }
 
   function uniqueByOwnerWordAndContext(items) {
+    const seenIds = new Set();
+    const idDedupedItems = [];
+
+    items.forEach((item) => {
+      const owner = item.owner || DEFAULT_OWNER;
+      const id = String(item.id || "").trim();
+      const idKey = id ? `${owner}|${id}` : "";
+      if (idKey && seenIds.has(idKey)) return;
+      if (idKey) seenIds.add(idKey);
+      idDedupedItems.push(item);
+    });
+
     const resultByKey = new Map();
     const lessonByKey = new Map();
     const keysByBase = new Map();
 
-    items.forEach((item) => {
+    idDedupedItems.forEach((item) => {
       const owner = item.owner || DEFAULT_OWNER;
       const lesson = normalizeLesson(item.lesson || "");
       const word = String(item.word || "").trim().toLowerCase();
@@ -1066,14 +1153,22 @@
     return [...resultByKey.values()];
   }
 
-  function detectPos(word) {
+  function detectPos(word, context) {
     // 複数語（句）の場合
-    const tokens = word.trim().split(/\s+/);
+    const text = String(word || "").trim();
+    if (!text) return "";
+    const tokens = text.split(/\s+/);
     if (tokens.length >= 2) {
       const first = tokens[0].toLowerCase().replace(/[^a-z]/g, "");
       if (/^(get|go|come|take|give|make|put|look|turn|run|fall|break|bring|keep|set|cut|let|hold|carry|pass|pick|pull|push|call|try|work|move|play|write|speak|think|feel|hear|see|find|use|show|send|read|grow|lose|build|locate|explore|discover|develop)$/.test(first)) return "動詞句";
       return "名詞句";
     }
+    const contextualPos = detectContextualPos(text, context);
+    if (contextualPos) return contextualPos;
+    return detectPosByWord(text);
+  }
+
+  function detectPosByWord(word) {
     const KNOWN = {
       "名詞": ["behavior","belief","chance","connection","definition","exam","example","fact","habit","luck","pattern","performance","superstition","world","brain","sport","athlete","score","question","object","time","day","pen","percent","result","place","point","thing","way","life","part","people","year","hand","name","group","idea","case","week","test","kind","mind","power","number","level","end","health","sense","effort","skill","rule","goal","term","role","risk","type","form","process","terrace","greenery","scenery","landscape","agriculture","economy","community","technology","nature","culture","society","environment","mountain","valley","river","forest","region","area","student","president","assistant","participant","element","moment","department","subject","project","impact","concept","aspect","account"],
       "形容詞": ["complex","difficult","irrational","lucky","professional","rational","simple","superstitious","careful","useful","different","important","special","good","bad","new","old","high","low","long","short","large","small","big","little","right","wrong","true","false","free","full","hard","soft","fast","slow","early","late","young","open","close","clear","dark","light","deep","real","strong","weak","sure","aware","able","ready","lush","vast","scenic","rural","urban","natural","local","global","ancient","modern","beautiful","amazing","traditional","significant","relevant","efficient","effective","appropriate","available","various","diverse","unique","typical","common","popular","current","recent","major","minor","primary","secondary"],
@@ -1093,13 +1188,123 @@
     return "";
   }
 
-  function renderResults() {
-    els.resultsList.classList.toggle("empty-state", detectedResults.length === 0);
-    els.resultsList.innerHTML = "";
-    els.detectedCount.textContent = `${detectedResults.length}件`;
-    els.saveAllBtn.disabled = detectedResults.length === 0;
+  function detectContextualPos(word, context) {
+    const base = normalizeLookupWord(lemmatize(word));
+    if (!base || !CONTEXTUAL_POS_WORDS.has(base) || !context) return "";
 
-    if (!detectedResults.length) {
+    const contextTokens = tokenizeEnglish(context);
+    let best = { label: "", score: 0 };
+    contextTokens.forEach((token, index) => {
+      if (!matchesTargetToken(token, base)) return;
+      const scores = scoreContextualPos(contextTokens, index, base);
+      Object.entries(scores).forEach(([label, score]) => {
+        if (score > best.score) best = { label, score };
+      });
+    });
+
+    return best.score >= 2 ? best.label : "";
+  }
+
+  function scoreContextualPos(tokens, index, base) {
+    const prev2 = tokens[index - 2] || "";
+    const prev = tokens[index - 1] || "";
+    const current = tokens[index] || "";
+    const next = tokens[index + 1] || "";
+    const next2 = tokens[index + 2] || "";
+    const scores = { "名詞": 0, "動詞": 0, "形容詞": 0 };
+    const determiners = new Set(["a","an","the","this","that","these","those","my","your","his","her","its","our","their","each","every","another","any","some","no"]);
+    const prepositions = new Set(["of","for","with","without","in","on","at","by","from","about","as","like","between","among","through","into","over","under","after","before"]);
+    const modals = new Set(["will","would","can","could","should","may","might","must","shall"]);
+    const auxiliaries = new Set(["do","does","did","be","am","is","are","was","were","been","being","have","has","had"]);
+    const subjects = new Set(["i","you","we","they","he","she","it","who","that","which"]);
+    const objectStarts = new Set(["a","an","the","this","that","these","those","my","your","his","her","its","our","their","me","you","him","her","it","us","them"]);
+    const particles = new Set(["out","up","down","in","into","through","by","away","back"]);
+
+    if (determiners.has(prev)) scores["名詞"] += 4;
+    if (next === "of") scores["名詞"] += base === "sort" ? 4 : 2;
+    if (prepositions.has(prev)) scores["名詞"] += 3;
+    if (["same","different","other","another","common","special","important","main"].includes(prev)) scores["名詞"] += 2;
+
+    if (prev === "to" || modals.has(prev) || auxiliaries.has(prev)) scores["動詞"] += 4;
+    if (auxiliaries.has(prev2) && ["not","never"].includes(prev)) scores["動詞"] += 4;
+    if (subjects.has(prev)) scores["動詞"] += 2;
+    if (objectStarts.has(next) || particles.has(next)) scores["動詞"] += 2;
+    if (base === "object" && next === "to") scores["動詞"] += 4;
+    if (base === "sort" && next === "out") scores["動詞"] += 4;
+    if ((current.endsWith("ed") || current.endsWith("ing")) && !determiners.has(prev)) scores["動詞"] += 2;
+    if (index === 0 && (objectStarts.has(next) || particles.has(next))) scores["動詞"] += 1;
+
+    if (base === "present" && auxiliaries.has(prev) && !objectStarts.has(next) && next2 !== "to") {
+      scores["形容詞"] += 3;
+    }
+
+    return scores;
+  }
+
+  function getContextualMeaning(word, context, pos) {
+    const base = normalizeLookupWord(lemmatize(word));
+    const meanings = CONTEXTUAL_MEANINGS[base];
+    if (!meanings) return "";
+    const detectedPos = pos || detectPos(word, context);
+    if (base === "sort" && /\bsort(?:s|ed|ing)?\s+out\b/i.test(String(context || ""))) {
+      return "整理する、解決する";
+    }
+    return meanings[detectedPos] || "";
+  }
+
+  function tokenizeEnglish(text) {
+    return (String(text || "").toLowerCase().match(/[a-z]+(?:'[a-z]+)?/g) || [])
+      .map((token) => token.replace(/^'+|'+$/g, ""));
+  }
+
+  function matchesTargetToken(token, base) {
+    const clean = normalizeLookupWord(token);
+    if (!clean) return false;
+    if (clean === base) return true;
+    if (normalizeLookupWord(lemmatize(clean)) === base) return true;
+    if (clean.endsWith("s") && clean.slice(0, -1) === base) return true;
+    if (clean.endsWith("ed") && clean.slice(0, -2) === base) return true;
+    if (clean.endsWith("ing") && clean.slice(0, -3) === base) return true;
+    return false;
+  }
+
+  function normalizeLookupWord(word) {
+    return String(word || "").toLowerCase().replace(/[^a-z]/g, "");
+  }
+
+  function clearSaveNotice() {
+    saveNotice = null;
+  }
+
+  function renderResults() {
+    const hasResults = detectedResults.length > 0;
+    const hasSaveNotice = Boolean(saveNotice);
+    els.resultsList.classList.toggle("empty-state", !hasResults && !hasSaveNotice);
+    els.resultsList.classList.toggle("save-complete-list", !hasResults && hasSaveNotice);
+    els.resultsList.innerHTML = "";
+    els.detectedCount.textContent = !hasResults && hasSaveNotice ? "保存済み" : `${detectedResults.length}件`;
+    els.saveAllBtn.disabled = !hasResults;
+
+    if (!hasResults) {
+      if (saveNotice) {
+        const noticeClass = {
+          complete: "is-complete",
+          syncing: "is-syncing",
+          warning: "is-warning"
+        }[saveNotice.state] || "is-complete";
+        const lessonText = saveNotice.lesson ? `レッスン: ${saveNotice.lesson}` : "レッスン未指定";
+        els.resultsList.innerHTML = `
+          <div class="save-complete-card ${noticeClass}" role="status">
+            <strong>${escapeHtml(saveNotice.title)}</strong>
+            <p>${escapeHtml(saveNotice.detail)}</p>
+            <div class="save-complete-meta">
+              <span>${Number(saveNotice.count) || 0}件</span>
+              <span>${escapeHtml(lessonText)}</span>
+            </div>
+          </div>
+        `;
+        return;
+      }
       els.resultsList.innerHTML = "<p>ハイライト上の単語が見つかりませんでした</p>";
       return;
     }
@@ -1136,9 +1341,9 @@
     if (!endpoint) {
       detectedResults = detectedResults.map((item) => ({
         ...item,
-        pos: item.pos || detectPos(item.word),
+        pos: item.pos || detectPos(item.word, item.context),
         contextJa: item.contextJa || "",
-        meaning: item.meaning || ""
+        meaning: item.meaning || getContextualMeaning(item.word, item.context, item.pos)
       }));
       setStatus("翻訳URLなし");
       return;
@@ -1154,12 +1359,14 @@
     const enrichedById = new Map((data.items || []).map((item) => [item.id, item]));
     detectedResults = detectedResults.map((item) => {
       const enriched = enrichedById.get(item.id) || {};
-      const rawMeaning = enriched.meaning || item.meaning || "";
+      const pos = enriched.pos || item.pos || detectPos(item.word, item.context);
+      const contextualMeaning = getContextualMeaning(item.word, item.context, pos);
+      const rawMeaning = contextualMeaning || enriched.meaning || item.meaning || "";
       // 文章っぽい意味（句点あり、または50文字超かつ読点あり）はゴミとして除外する
-      const meaning = isSentenceLike(rawMeaning) ? "" : rawMeaning;
+      const meaning = isSentenceLike(rawMeaning) ? (contextualMeaning || "") : rawMeaning;
       return {
         ...item,
-        pos: enriched.pos || item.pos || "",
+        pos,
         contextJa: enriched.contextJa || item.contextJa || "",
         meaning
       };
@@ -1177,16 +1384,22 @@
 
       const lesson = getCurrentLesson();
       const items = detectedResults
-        .map((item) => ({
-          ...item,
-          lesson,
-          word: (item.word || "").trim(),
-          context: (item.context || "").trim(),
-          contextJa: (item.contextJa || "").trim(),
-          meaning: (item.meaning || "").trim(),
-          createdAt: item.createdAt || new Date().toISOString(),
-          owner
-        }))
+        .map((item) => {
+          const word = (item.word || "").trim();
+          const context = (item.context || "").trim();
+          const pos = (item.pos || "").trim() || detectPos(word, context);
+          return {
+            ...item,
+            lesson,
+            word,
+            pos,
+            context,
+            contextJa: (item.contextJa || "").trim(),
+            meaning: (item.meaning || "").trim() || getContextualMeaning(word, context, pos),
+            createdAt: item.createdAt || new Date().toISOString(),
+            owner
+          };
+        })
         .filter((item) => item.word);
 
       if (!items.length) {
@@ -1196,15 +1409,24 @@
       }
 
       setStatus("保存中");
+      els.saveAllBtn.disabled = true;
+      const savedCount = items.length;
+      const endpoint = saveEndpoint();
 
       // GAS同期に失敗しても、端末内の履歴は失わないよう先にローカル保存する。
       saveLocalItems(items);
       detectedResults = [];
+      saveNotice = {
+        state: endpoint ? "syncing" : "complete",
+        title: endpoint ? "端末内に保存しました" : "単語帳に追加しました",
+        detail: endpoint ? "クラウド同期を確認しています" : "端末内への保存が完了しました",
+        count: savedCount,
+        lesson
+      };
       renderResults();
       renderWordList();
       showRandomQuiz(false);
 
-      const endpoint = saveEndpoint();
       if (!endpoint) {
         setStatus("ローカル保存完了");
         alert("端末内に保存しました。");
@@ -1215,14 +1437,31 @@
         await postToGas(endpoint, { action: "saveMany", owner, items });
         await loadSavedItems();
         setStatus("保存完了");
+        saveNotice = {
+          state: "complete",
+          title: "単語帳に追加しました",
+          detail: "保存と同期が完了しました",
+          count: savedCount,
+          lesson
+        };
+        renderResults();
       } catch (error) {
         console.error(error);
         setStatus("GAS同期失敗");
+        saveNotice = {
+          state: "warning",
+          title: "端末内に保存しました",
+          detail: "GASへの同期は未完了です",
+          count: savedCount,
+          lesson
+        };
+        renderResults();
         alert("端末内には保存しましたが、GASへの同期に失敗しました。\n\n理由：" + formatErrorMessage(error) + "\n\nGAS側のCode.gsを最新版に貼り替えて、Webアプリを再デプロイしてください。");
       }
     } catch (error) {
       console.error(error);
       setStatus("保存失敗");
+      if (detectedResults.length) els.saveAllBtn.disabled = false;
       alert("保存処理でエラーが発生しました。\n\n理由：" + formatErrorMessage(error));
     }
   }
@@ -1299,7 +1538,8 @@
     savedItems = savedItems.map((item) => ({
       ...item,
       lesson: normalizeLesson(item.lesson || ""),
-      pos: item.pos || detectPos(item.word)
+      pos: item.pos || detectPos(item.word, item.context),
+      meaning: item.meaning || getContextualMeaning(item.word, item.context, item.pos)
     }));
     refreshLessonChoices();
     renderWordList();
@@ -1430,14 +1670,16 @@
       alert("英単語を入力してください。");
       return;
     }
+    const context = (values.context || "").trim();
+    const pos = (values.pos || "").trim() || detectPos(word, context);
 
     const updatedItem = {
       ...savedItems.find((item) => item.id === id),
       lesson: normalizeLesson(values.lesson || ""),
       word,
-      pos: (values.pos || "").trim() || detectPos(word),
-      meaning: (values.meaning || "").trim(),
-      context: (values.context || "").trim(),
+      pos,
+      meaning: (values.meaning || "").trim() || getContextualMeaning(word, context, pos),
+      context,
       contextJa: (values.contextJa || "").trim(),
       owner
     };
@@ -1618,7 +1860,7 @@
       <div class="quiz-card quiz-start-card">
         <div class="quiz-summary">
           <span>${escapeHtml(getQuizRangeLabel(scope, getSelectedQuizLesson()))}</span>
-          <strong>${questionCount}問</strong>
+          <strong>${isScoreMode ? formatQuizTime(totalTime) : `${questionCount}問`}</strong>
         </div>
         <p class="quiz-context">${isScoreMode
           ? `制限時間${formatQuizTime(totalTime)}のスコアチャレンジです。時間内は問題が繰り返し出ます。`
@@ -1637,6 +1879,7 @@
     const pool = Array.isArray(retryItems) ? retryItems : getQuizPool(scope);
     const questions = shuffle(pool);
     const mode = getSelectedQuizMode();
+    const direction = getSelectedQuizDirection();
     const totalTime = questions.length * 3;
 
     if (!questions.length) {
@@ -1647,6 +1890,7 @@
     quizSession = {
       scope,
       mode,
+      direction,
       lesson: getSelectedQuizLesson(),
       questions,
       index: 0,
@@ -1672,20 +1916,26 @@
     }
 
     const item = quizSession.questions[quizSession.index];
+    const promptLabel = getQuizPromptLabel(item, quizSession.direction);
+    const contextLabel = getQuizContextLabel(item, quizSession.direction);
     quizSession.answered = false;
-    quizSession.choices = buildAnswerChoices(item);
+    quizSession.choices = buildAnswerChoices(item, quizSession.direction);
     els.nextQuizBtn.disabled = true;
 
     els.quizBox.className = "quiz-box";
-    els.quizBox.innerHTML = `
-      <div class="quiz-card">
+    const progressHtml = isQuizScoreMode(quizSession)
+      ? getScoreModeProgressHtml()
+      : `
         <div class="quiz-progress">
           <span>${quizSession.index + 1} / ${quizSession.questions.length}</span>
-          ${isQuizScoreMode(quizSession) ? `<span id="quizTimer" class="quiz-timer">${formatQuizTime(quizSession.timeRemaining)}</span>` : ""}
           <span>${escapeHtml(getQuizRangeLabel(quizSession.scope, quizSession.lesson))}</span>
         </div>
-        <p class="quiz-word">${escapeHtml(item.word)}</p>
-        <p class="quiz-context">${highlightWord(escapeHtml(item.context || ""), item.word)}</p>
+      `;
+    els.quizBox.innerHTML = `
+      <div class="quiz-card">
+        ${progressHtml}
+        <p class="quiz-word">${escapeHtml(promptLabel)}</p>
+        <p class="quiz-context">${contextLabel}</p>
         <div class="quiz-options">
           ${quizSession.choices.map((choice, index) => `
             <button class="quiz-option" type="button" data-index="${index}">${escapeHtml(choice)}</button>
@@ -1698,6 +1948,20 @@
     els.quizBox.querySelectorAll(".quiz-option").forEach((button) => {
       button.addEventListener("click", () => answerQuiz(Number(button.dataset.index)));
     });
+    updateQuizScoreHud();
+  }
+
+  function getScoreModeProgressHtml() {
+    const score = getQuizScoreSummary(quizSession);
+    return `
+      <div class="quiz-progress quiz-score-hud">
+        <span id="quizTimer" class="quiz-timer">${formatQuizTime(quizSession.timeRemaining)}</span>
+        <span>正解 <strong id="quizHudCorrect">${score.correctCount}</strong></span>
+        <span>ミス <strong id="quizHudWrong">${score.wrongCount}</strong></span>
+        <span>スコア <strong id="quizHudScore">${score.finalScore}</strong></span>
+        <span class="quiz-range-label">${escapeHtml(getQuizRangeLabel(quizSession.scope, quizSession.lesson))}</span>
+      </div>
+    `;
   }
 
   function answerQuiz(choiceIndex) {
@@ -1705,11 +1969,12 @@
 
     const item = quizSession.questions[quizSession.index];
     const selected = quizSession.choices[choiceIndex];
-    const correctAnswer = getMeaningLabel(item);
+    const correctAnswer = getQuizAnswerLabel(item, quizSession.direction);
     const isCorrect = selected === correctAnswer;
     quizSession.answered = true;
     quizSession.answers.push({ item, selected, correctAnswer, isCorrect });
     recordQuizResult(item, isCorrect);
+    updateQuizScoreHud();
 
     if (isQuizScoreMode(quizSession)) {
       showScoreModeAnswerFlash(selected, correctAnswer, isCorrect);
@@ -1727,7 +1992,7 @@
     feedback.className = 'quiz-feedback ' + (isCorrect ? 'is-correct' : 'is-wrong');
     feedback.innerHTML = `
       <strong>${isCorrect ? "正解" : "不正解"}</strong>
-      <p>意味: ${escapeHtml(correctAnswer)}</p>
+      ${getQuizFeedbackLines(item, quizSession.direction)}
       <p>${escapeHtml(item.contextJa || "日本語訳なし")}</p>
     `;
     els.nextQuizBtn.disabled = false;
@@ -1861,6 +2126,7 @@
       timer.textContent = formatQuizTime(remaining);
       timer.classList.toggle("is-danger", remaining <= 5);
     }
+    updateQuizScoreHud();
 
     if (remaining <= 0) {
       quizSession.timedOut = true;
@@ -1884,6 +2150,63 @@
     const baseScore = (correctCount * 100) - (wrongCount * 50);
     const finalScore = totalTime > 0 ? Math.max(0, Math.round(baseScore * (60 / totalTime))) : 0;
     return { correctCount, wrongCount, totalTime, baseScore, finalScore };
+  }
+
+  function updateQuizScoreHud() {
+    if (!quizSession || !isQuizScoreMode(quizSession)) return;
+    const score = getQuizScoreSummary(quizSession);
+    const correct = $("quizHudCorrect");
+    const wrong = $("quizHudWrong");
+    const scoreValue = $("quizHudScore");
+    if (correct) correct.textContent = score.correctCount;
+    if (wrong) wrong.textContent = score.wrongCount;
+    if (scoreValue) scoreValue.textContent = score.finalScore;
+  }
+
+  function setupQuizModeButtons() {
+    if (!els.quizMode || !els.quizModeButtons || !els.quizModeButtons.length) return;
+    els.quizModeButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const mode = button.dataset.quizMode;
+        if (!mode) return;
+        els.quizMode.value = mode;
+        els.quizMode.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    });
+    updateQuizModeButtons();
+  }
+
+  function updateQuizModeButtons() {
+    if (!els.quizModeButtons || !els.quizModeButtons.length) return;
+    const mode = getSelectedQuizMode();
+    els.quizModeButtons.forEach((button) => {
+      const isActive = button.dataset.quizMode === mode;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+  }
+
+  function setupQuizDirectionButtons() {
+    if (!els.quizDirection || !els.quizDirectionButtons || !els.quizDirectionButtons.length) return;
+    els.quizDirectionButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const direction = button.dataset.quizDirection;
+        if (!direction) return;
+        els.quizDirection.value = direction;
+        els.quizDirection.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    });
+    updateQuizDirectionButtons();
+  }
+
+  function updateQuizDirectionButtons() {
+    if (!els.quizDirectionButtons || !els.quizDirectionButtons.length) return;
+    const direction = getSelectedQuizDirection();
+    els.quizDirectionButtons.forEach((button) => {
+      const isActive = button.dataset.quizDirection === direction;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
   }
 
   function getSelectedQuizMode() {
@@ -1986,18 +2309,63 @@
     return els.quizLesson ? els.quizLesson.value : "all";
   }
 
-  function buildAnswerChoices(item) {
-    const correct = getMeaningLabel(item);
-    const choices = [correct];
-    const otherMeanings = shuffle(savedItems
-      .map(getMeaningLabel)
-      .filter((meaning) => meaning && meaning !== correct));
+  function getSelectedQuizDirection() {
+    return els.quizDirection ? els.quizDirection.value : "word-to-meaning";
+  }
 
-    otherMeanings.forEach((meaning) => {
-      if (choices.length < 4 && !choices.includes(meaning)) choices.push(meaning);
+  function isMeaningToWordDirection(direction) {
+    return direction === "meaning-to-word";
+  }
+
+  function getQuizPromptLabel(item, direction) {
+    return isMeaningToWordDirection(direction) ? getMeaningLabel(item) : String(item.word || "").trim();
+  }
+
+  function getQuizAnswerLabel(item, direction) {
+    return isMeaningToWordDirection(direction) ? String(item.word || "").trim() : getMeaningLabel(item);
+  }
+
+  function getQuizContextLabel(item, direction) {
+    const context = String(item.context || "").trim();
+    if (isMeaningToWordDirection(direction)) {
+      return context
+        ? escapeHtml(maskWordInContext(context, item.word))
+        : "日本語の意味に合う英単語を選びます";
+    }
+    return highlightWord(escapeHtml(context), item.word);
+  }
+
+  function getQuizFeedbackLines(item, direction) {
+    if (isMeaningToWordDirection(direction)) {
+      return `
+        <p>英単語: ${escapeHtml(String(item.word || "").trim())}</p>
+        <p>意味: ${escapeHtml(getMeaningLabel(item))}</p>
+      `;
+    }
+    return `<p>意味: ${escapeHtml(getMeaningLabel(item))}</p>`;
+  }
+
+  function maskWordInContext(context, word) {
+    const target = String(word || "").trim();
+    if (!target) return context;
+    return context.replace(new RegExp(`\\b${escapeRegExp(target)}\\b`, "gi"), "_____");
+  }
+
+  function buildAnswerChoices(item, direction = getSelectedQuizDirection()) {
+    const correct = getQuizAnswerLabel(item, direction);
+    const choices = [correct];
+    const otherAnswers = shuffle(savedItems
+      .map((savedItem) => getQuizAnswerLabel(savedItem, direction))
+      .filter((answer) => answer && answer !== correct));
+
+    otherAnswers.forEach((answer) => {
+      if (choices.length < 4 && !choices.includes(answer)) choices.push(answer);
     });
 
-    ["文脈から判断する", "まだ意味が登録されていません", "別の意味"].forEach((fallback) => {
+    const fallbacks = direction === "meaning-to-word"
+      ? ["review", "context", "example"]
+      : ["文脈から判断する", "まだ意味が登録されていません", "別の意味"];
+    fallbacks.forEach((fallback) => {
       if (choices.length < 4 && !choices.includes(fallback) && fallback !== correct) choices.push(fallback);
     });
 
