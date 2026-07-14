@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LexiLight OCR</title>
-  <link rel="stylesheet" href="styles.css?v=20260706-scoreloop">
+  <link rel="stylesheet" href="styles.css?v=20260710-quiz-direction-short-label">
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
-  <script src="app.js?v=20260706-scoreloop" defer></script>
+  <script src="app.js?v=20260710-quiz-direction-toggle" defer></script>
 </head>
 <body>
   <header class="app-header">
@@ -102,11 +102,14 @@
         <p>画像を読み込むと、黄色ハイライト上の単語がここに表示されます</p>
       </div>
 
-      <div class="save-bar">
+      <div id="saveBar" class="save-bar">
         <label class="field lesson-field">
-          <span>レッスン</span>
-          <select id="lessonSelect">
-            <option value="" selected>未指定</option>
+          <span class="lesson-label">
+            <strong>保存先レッスン</strong>
+            <b>先に選択</b>
+          </span>
+          <select id="lessonSelect" aria-describedby="lessonReminder">
+            <option value="" selected>レッスンを選択</option>
             <option value="Unit 1">Unit 1</option>
             <option value="Unit 2">Unit 2</option>
             <option value="Unit 3">Unit 3</option>
@@ -128,6 +131,7 @@
             <option value="Unit 7"></option>
             <option value="Unit 8"></option>
           </datalist>
+          <p id="lessonReminder" class="lesson-reminder">単語帳に追加する前に選びます</p>
         </label>
         <button id="saveAllBtn" class="button primary" type="button" disabled>単語帳に追加</button>
       </div>
@@ -176,14 +180,23 @@
           <h2 id="quizTitle">復習クイズ</h2>
         </div>
         <div class="quiz-actions">
-          <label class="field compact">
+          <div class="field quiz-mode-control">
             <span>モード</span>
-            <select id="quizMode">
-              <option value="study" selected>学習</option>
-              <option value="score">スコア</option>
-            </select>
-          </label>
-          <label class="field compact">
+            <div class="quiz-mode-buttons" role="group" aria-label="復習モード">
+              <button class="quiz-mode-btn is-study is-active" type="button" data-quiz-mode="study" aria-pressed="true">学習</button>
+              <button class="quiz-mode-btn is-score" type="button" data-quiz-mode="score" aria-pressed="false">スコア</button>
+            </div>
+            <input id="quizMode" type="hidden" value="study">
+          </div>
+          <div class="field quiz-direction-control">
+            <span>出題形式</span>
+            <div class="quiz-direction-buttons" role="group" aria-label="出題形式">
+              <button class="quiz-direction-btn is-word-meaning is-active" type="button" data-quiz-direction="word-to-meaning" aria-pressed="true">英→日</button>
+              <button class="quiz-direction-btn is-meaning-word" type="button" data-quiz-direction="meaning-to-word" aria-pressed="false">日→英</button>
+            </div>
+            <input id="quizDirection" type="hidden" value="word-to-meaning">
+          </div>
+          <label class="field compact quiz-scope-control">
             <span>出題範囲</span>
             <select id="quizScope">
               <option value="all" selected>すべての単語</option>
