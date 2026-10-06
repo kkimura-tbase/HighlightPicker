@@ -6,7 +6,9 @@
   <title>LexiLight OCR</title>
   <link rel="stylesheet" href="styles.css?v=20260710-quiz-direction-short-label">
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
-  <script src="app.js?v=20260710-quiz-direction-toggle" defer></script>
+  <script src="local-accuracy.js?v=20260907" defer></script>
+  <script src="ocr-layout.js?v=20261006" defer></script>
+  <script src="app.js?v=20261006-layout" defer></script>
 </head>
 <body>
   <header class="app-header">
@@ -261,6 +263,11 @@
       <div class="meta-row">
         <span class="confidence"></span>
         <span class="source-note"></span>
+      </div>
+      <div class="meta-row correction-actions">
+        <button class="button secondary remember-correction" type="button">訂正を記憶</button>
+        <button class="button secondary forget-correction" type="button">記憶を解除</button>
+        <span class="correction-status" role="status" aria-live="polite"></span>
       </div>
     </article>
   </template>

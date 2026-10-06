@@ -10,6 +10,16 @@
   const DEFAULT_LESSONS = ["Unit 1", "Unit 2", "Unit 3", "Unit 4", "Unit 5", "Unit 6", "Unit 7", "Unit 8"];
   const CUSTOM_LESSON_VALUE = "__custom__";
   const CONTEXTUAL_MEANINGS = {
+    attention: { "名詞": "注意、注目" },
+    strange: { "形容詞": "奇妙な、不思議な" },
+    imagine: { "動詞": "想像する" },
+    suddenly: { "副詞": "突然、急に" },
+    realize: { "動詞": "気づく、悟る" },
+    wrong: { "形容詞": "間違った" },
+    interesting: { "形容詞": "興味深い、おもしろい" },
+    rational: { "形容詞": "合理的な" },
+    irrational: { "形容詞": "非合理的な" },
+    superstitious: { "形容詞": "迷信深い" },
     sort: {
       "動詞": "分類する、整理する",
       "名詞": "種類、分類"
@@ -60,7 +70,8 @@
       "名詞": "記録"
     }
   };
-  const CONTEXTUAL_POS_WORDS = new Set(Object.keys(CONTEXTUAL_MEANINGS));
+  const CONTEXTUAL_POS_WORDS = new Set(Object.keys(CONTEXTUAL_MEANINGS)
+    .filter(word => Object.keys(CONTEXTUAL_MEANINGS[word]).length > 1));
   // 教師側で端末ごとに固定したい場合だけ、任意の氏名またはIDを入れます。
   const FIXED_OWNER = "";
   // 管理者が固定のGAS URLを配布したい場合だけ、ここに /exec のURLを入れます。
@@ -630,19 +641,28 @@
     ocrCanvas.width = els.canvas.width;
     ocrCanvas.height = els.canvas.height;
     ocrCanvas.getContext("2d").drawImage(imageBitmap, 0, 0, ocrCanvas.width, ocrCanvas.height);
+    let worker;
     try {
-      const result = await Tesseract.recognize(ocrCanvas, els.ocrLang.value, {
+      const ocrContext = ocrCanvas.getContext("2d");
+      const pixels = ocrContext.getImageData(0, 0, ocrCanvas.width, ocrCanvas.height);
+      OcrLayout.removeHighlight(pixels.data);
+      ocrContext.putImageData(pixels, 0, 0);
+      worker = await Tesseract.createWorker(els.ocrLang.value, 1, {
         logger: (message) => {
           if (message.status === "recognizing text" && typeof message.progress === "number") {
             setStatus(`${Math.round(message.progress * 100)}%`);
           }
         }
       });
+      await worker.setParameters({ tessedit_pageseg_mode: "3" });
+      const result = await worker.recognize(ocrCanvas, {}, { blocks: true, text: true });
       detectedResults = buildResults(result.data, highlightRects, inclusionZones);
+      applyRememberedCorrections();
       renderResults();
       if (detectedResults.length) {
         try {
           await enrichDetectedItems();
+          applyRememberedCorrections();
           renderResults();
         } catch (translationError) {
           console.warn(translationError);
@@ -657,6 +677,7 @@
       alert("OCRに失敗しました。画像を少し拡大したスクリーンショットで再度お試しください。");
     } finally {
       els.runOcrBtn.disabled = false;
+      if (worker) await worker.terminate();
     }
   }
 
@@ -707,6 +728,7 @@
       }
     }
 
+    LocalAccuracy.bridgeGaps(mask, includeMask, width, height);
     const visited = new Uint8Array(width * height);
     const rects = [];
     const queue = [];
@@ -837,13 +859,15 @@
     const lines = zones && zones.length
       ? allLines.filter((line) => zones.some((zone) => overlaps(line.bbox, zone) > 0))
       : allLines;
-    const fullText = lines.map((line) => line.text).join("\n") || data.text || "";
     const found = [];
 
     highlightRects.forEach((rect) => {
       const rectWords = words.filter((word) => isInside(word.bbox, rect));
       if (!rectWords.length) return;
-      const sorted = rectWords.sort((a, b) => a.bbox.y - b.bbox.y || a.bbox.x - b.bbox.x);
+      const sorted = rectWords.sort((a, b) => {
+        const sameLine = Math.abs(centerY(a.bbox) - centerY(b.bbox)) < Math.max(a.bbox.height, b.bbox.height) / 2;
+        return sameLine ? a.bbox.x - b.bbox.x : a.bbox.y - b.bbox.y;
+      });
       const text = cleanWord(sorted.map((word) => word.text).join(" "));
       if (!text) return;
 
@@ -852,7 +876,7 @@
       const wordTokens = text.split(" ");
       const baseWord = wordTokens.length === 1 ? lemmatize(text) : text;
       
-      const context = findBestContext(text, sorted, lines, fullText);
+      const context = findBestContext(text, sorted, lines);
       const pos = detectPos(baseWord, context);
       found.push({
         id: makeId(),
@@ -871,7 +895,7 @@
   }
 
   function normalizeWords(data) {
-    const sourceWords = Array.isArray(data.words) ? data.words : [];
+    const sourceWords = OcrLayout.words(data);
     return sourceWords.map((word) => ({
       text: word.text || "",
       confidence: Number.isFinite(word.confidence) ? word.confidence : 0,
@@ -880,23 +904,7 @@
   }
 
   function normalizeLines(data) {
-    const sourceLines = Array.isArray(data.lines) ? data.lines : [];
-    return sourceLines.map((line) => {
-      let text = line.text || "";
-      // line.words が利用可能な場合、信頼度の低い単語（OCRゴミ）を除外して再構築する
-      // 画像テクスチャの誤読は通常 confidence < 45% になる
-      const lineWords = Array.isArray(line.words) ? line.words : [];
-      if (lineWords.length > 0) {
-        const filtered = lineWords
-          .filter(w => !Number.isFinite(w.confidence) || w.confidence >= 45)
-          .map(w => (w.text || "").trim())
-          .filter(t => t.length > 0);
-        if (filtered.length > 0) {
-          text = filtered.join(" ");
-        }
-      }
-      return { text, bbox: normalizeBbox(line.bbox || line) };
-    }).filter((line) => line.text.trim());
+    return OcrLayout.lines(data).filter(line => line.text.trim());
   }
 
   function normalizeBbox(bbox) {
@@ -1016,71 +1024,30 @@
 
     if (irregulars[w]) return irregulars[w];
 
-    // 単純な語尾変化の除去
-    if (w.length > 4) {
-      if (w.endsWith("ies")) return w.slice(0, -3) + "y";
-      if (w.endsWith("es") && (w.endsWith("ches") || w.endsWith("shes") || w.endsWith("sses") || w.endsWith("xes"))) return w.slice(0, -2);
-      if (w.endsWith("s") && !w.endsWith("ss") && !w.endsWith("us") && !w.endsWith("is")) return w.slice(0, -1);
-      
-      if (w.endsWith("ied")) return w.slice(0, -3) + "y";
-      if (w.endsWith("ed")) {
-        // e.g., stopped -> stop, played -> play. 
-        // e.g., liked -> like
-        if (w.match(/([bcdfghjklmnpqrstvwxyz])\1ed$/)) return w.slice(0, -3); // dropped -> drop
-        if (w.endsWith("cked") || w.endsWith("shed") || w.endsWith("ched")) return w.slice(0, -2); // checked -> check
-        return w.slice(0, -1); // changed -> change (it's hard to distinguish liked->like vs played->play without dict. fallback to removing 'd')
-      }
-      
-      if (w.endsWith("ing")) {
-        if (w.match(/([bcdfghjklmnpqrstvwxyz])\1ing$/)) return w.slice(0, -4); // dropping -> drop
-        if (w.endsWith("ying")) return w.slice(0, -3); // playing -> play
-        return w.slice(0, -3) + "e"; // making -> make (again, imperfect without dict)
-      }
-    }
+    // Only convert confirmed forms. Guessing an ending can invent words
+    // (interesting -> intereste, played -> playe, news -> new).
+    const regularForms = {
+      realized: "realize", realizes: "realize", realizing: "realize",
+      noticed: "notice", notices: "notice", noticing: "notice",
+      played: "play", plays: "play", playing: "play",
+      stopped: "stop", stops: "stop", stopping: "stop",
+      liked: "like", likes: "like", liking: "like",
+      studied: "study", studies: "study", studying: "study",
+      changed: "change", changes: "change", changing: "change",
+      listened: "listen", listens: "listen", listening: "listen",
+      opened: "open", opens: "open", opening: "open",
+      happened: "happen", happens: "happen", happening: "happen",
+      walked: "walk", walks: "walk", walking: "walk",
+      looked: "look", looks: "look", looking: "look",
+      wanted: "want", wants: "want", wanting: "want"
+    };
+    if (regularForms[w]) return regularForms[w];
 
     return w;
   }
 
-  function findBestContext(text, words, lines, fullText) {
-    if (!words.length || !lines.length) {
-      const w = cleanWord(text).split(" ")[0];
-      const s = findSentenceContaining(fullText.replace(/\n/g, " "), w);
-      return (s && s.length <= 500) ? cleanOcrText(s) : cleanOcrText(fullText.trim().substring(0, 200));
-    }
-
-    // ハイライト語のbboxと重なる行を位置基準で特定する
-    const sortedLines = [...lines].sort((a, b) => a.bbox.y - b.bbox.y);
-    const avgY = average(words.map(w => centerY(w.bbox)));
-
-    // ハイライト語の中心Yが含まれる行を探す
-    let anchorIdx = sortedLines.findIndex(l =>
-      words.some(w => centerY(w.bbox) >= l.bbox.y - 4 && centerY(w.bbox) <= l.bbox.y + l.bbox.height + 4)
-    );
-    if (anchorIdx === -1) {
-      let minDist = Infinity;
-      sortedLines.forEach((l, i) => {
-        const d = Math.abs(centerY(l.bbox) - avgY);
-        if (d < minDist) { minDist = d; anchorIdx = i; }
-      });
-    }
-
-    // anchor行の前後3行を結合して段落テキストを作り、その中の1文を探す
-    const winStart = Math.max(0, anchorIdx - 3);
-    const winEnd = Math.min(sortedLines.length - 1, anchorIdx + 3);
-    const paragraph = sortedLines.slice(winStart, winEnd + 1).map(l => cleanOcrText(l.text.trim())).join(" ");
-    const targetWord = cleanWord(text).split(" ")[0];
-    const sentence = findSentenceContaining(paragraph, targetWord);
-    if (sentence && sentence.length <= 500) return cleanOcrText(sentence);
-
-    return cleanOcrText(sortedLines[anchorIdx].text.trim()) || text;
-  }
-  function findSentenceContaining(text, word) {
-    const normalized = text.replace(/\s+/g, " ").trim();
-    if (!normalized) return "";
-    const sentences = normalized.match(/[^.!?]+[.!?]?/g) || [normalized];
-    const lowerWord = word.toLowerCase();
-    const found = sentences.find((sentence) => sentence.toLowerCase().includes(lowerWord));
-    return (found || normalized).trim();
+  function findBestContext(text, words, lines) {
+    return cleanOcrText(OcrLayout.context(words, lines)) || text;
   }
 
   function average(values) {
@@ -1169,6 +1136,9 @@
   }
 
   function detectPosByWord(word) {
+    const exact = { attention: "名詞", strange: "形容詞", imagine: "動詞",
+      suddenly: "副詞", realize: "動詞", interesting: "形容詞" };
+    if (exact[word.toLowerCase()]) return exact[word.toLowerCase()];
     const KNOWN = {
       "名詞": ["behavior","belief","chance","connection","definition","exam","example","fact","habit","luck","pattern","performance","superstition","world","brain","sport","athlete","score","question","object","time","day","pen","percent","result","place","point","thing","way","life","part","people","year","hand","name","group","idea","case","week","test","kind","mind","power","number","level","end","health","sense","effort","skill","rule","goal","term","role","risk","type","form","process","terrace","greenery","scenery","landscape","agriculture","economy","community","technology","nature","culture","society","environment","mountain","valley","river","forest","region","area","student","president","assistant","participant","element","moment","department","subject","project","impact","concept","aspect","account"],
       "形容詞": ["complex","difficult","irrational","lucky","professional","rational","simple","superstitious","careful","useful","different","important","special","good","bad","new","old","high","low","long","short","large","small","big","little","right","wrong","true","false","free","full","hard","soft","fast","slow","early","late","young","open","close","clear","dark","light","deep","real","strong","weak","sure","aware","able","ready","lush","vast","scenic","rural","urban","natural","local","global","ancient","modern","beautiful","amazing","traditional","significant","relevant","efficient","effective","appropriate","available","various","diverse","unique","typical","common","popular","current","recent","major","minor","primary","secondary"],
@@ -1276,6 +1246,17 @@
     saveNotice = null;
   }
 
+  function applyRememberedCorrections() {
+    try {
+      detectedResults.forEach((item) => {
+        const correction = LocalAccuracy.get(localStorage, getCurrentOwner(), getCurrentLesson(), item);
+        if (correction) Object.assign(item, correction);
+      });
+    } catch (error) {
+      console.warn("Local corrections unavailable", error);
+    }
+  }
+
   function renderResults() {
     const hasResults = detectedResults.length > 0;
     const hasSaveNotice = Boolean(saveNotice);
@@ -1321,15 +1302,44 @@
       contextInput.value = item.context;
       contextJaInput.value = item.contextJa || "";
       meaningInput.value = item.meaning || "";
-      node.querySelector(".confidence").textContent = `信頼度 ${item.confidence || 0}%`;
+      node.querySelector(".confidence").textContent = `文字認識 ${item.confidence || 0}%`;
+      node.querySelector(".confidence").title = "意味・品詞の正確さを示す数値ではありません";
+      const correctionStatus = node.querySelector(".correction-status");
+      const updateCorrectionStatus = () => {
+        try {
+          const correction = LocalAccuracy.get(localStorage, getCurrentOwner(), getCurrentLesson(), item);
+          node.querySelector(".forget-correction").disabled = !correction;
+          correctionStatus.textContent = correction ? "この端末に記憶済み" : "";
+        } catch (error) {
+          correctionStatus.textContent = "訂正の記憶を読み取れません";
+        }
+      };
+      updateCorrectionStatus();
+      node.querySelector(".remember-correction").addEventListener("click", () => {
+        try {
+          LocalAccuracy.remember(localStorage, getCurrentOwner(), getCurrentLesson(), item);
+          updateCorrectionStatus();
+        } catch (error) {
+          correctionStatus.textContent = `記憶できませんでした: ${error.message}`;
+        }
+      });
+      node.querySelector(".forget-correction").addEventListener("click", () => {
+        try {
+          LocalAccuracy.forget(localStorage, getCurrentOwner(), getCurrentLesson(), item);
+          updateCorrectionStatus();
+          correctionStatus.textContent = "記憶を解除しました";
+        } catch (error) {
+          correctionStatus.textContent = "記憶を解除できませんでした";
+        }
+      });
       node.querySelector(".source-note").textContent = item.source;
       node.querySelector(".remove-result").addEventListener("click", () => {
         detectedResults.splice(index, 1);
         renderResults();
       });
-      wordInput.addEventListener("input", () => { item.word = wordInput.value.trim(); });
+      wordInput.addEventListener("input", () => { item.word = wordInput.value.trim(); updateCorrectionStatus(); });
       if (posInput) posInput.addEventListener("input", () => { item.pos = posInput.value.trim(); });
-      contextInput.addEventListener("input", () => { item.context = contextInput.value.trim(); });
+      contextInput.addEventListener("input", () => { item.context = contextInput.value.trim(); updateCorrectionStatus(); });
       contextJaInput.addEventListener("input", () => { item.contextJa = contextJaInput.value.trim(); });
       meaningInput.addEventListener("input", () => { item.meaning = meaningInput.value.trim(); });
       els.resultsList.appendChild(node);
@@ -1359,7 +1369,7 @@
     const enrichedById = new Map((data.items || []).map((item) => [item.id, item]));
     detectedResults = detectedResults.map((item) => {
       const enriched = enrichedById.get(item.id) || {};
-      const pos = enriched.pos || item.pos || detectPos(item.word, item.context);
+      const pos = item.pos || enriched.pos || detectPos(item.word, item.context);
       const contextualMeaning = getContextualMeaning(item.word, item.context, pos);
       const rawMeaning = contextualMeaning || enriched.meaning || item.meaning || "";
       // 文章っぽい意味（句点あり、または50文字超かつ読点あり）はゴミとして除外する

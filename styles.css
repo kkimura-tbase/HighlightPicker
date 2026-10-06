@@ -443,6 +443,9 @@ textarea { resize: vertical; }
 .remove-result:hover { background: rgba(239, 68, 68, 0.2); }
 
 .meta-row { margin-top: 12px; font-size: 12px; }
+.correction-actions { flex-wrap: wrap; gap: 8px; }
+.correction-actions .button { padding: 8px 12px; font-size: 13px; }
+.correction-status { overflow-wrap: anywhere; }
 
 .save-bar {
   align-items: flex-end;
