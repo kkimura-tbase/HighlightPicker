@@ -861,7 +861,7 @@
       : allLines;
     const found = [];
 
-    highlightRects.forEach((rect) => {
+    OcrLayout.orderHighlights(highlightRects, lines).forEach((rect) => {
       const rectWords = words.filter((word) => isInside(word.bbox, rect));
       if (!rectWords.length) return;
       const sorted = rectWords.sort((a, b) => {

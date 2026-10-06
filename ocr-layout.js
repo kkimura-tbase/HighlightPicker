@@ -30,6 +30,26 @@
       Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
   }
 
+  function orderHighlights(rects, readingLines) {
+    // Tesseract's block/paragraph traversal already follows reading order.
+    // Sorting all highlights by page Y would interleave separate columns.
+    return rects.map((rect, originalIndex) => {
+      let lineIndex = Infinity, bestOverlap = 0;
+      readingLines.forEach((line, index) => {
+        const overlap = intersection(rect, line.bbox);
+        if (overlap > bestOverlap) {
+          bestOverlap = overlap;
+          lineIndex = index;
+        }
+      });
+      return { rect, lineIndex, originalIndex };
+    }).sort((a, b) => {
+      if (a.lineIndex !== b.lineIndex) return a.lineIndex - b.lineIndex;
+      if (Number.isFinite(a.lineIndex)) return a.rect.x - b.rect.x || a.originalIndex - b.originalIndex;
+      return a.rect.y - b.rect.y || a.rect.x - b.rect.x || a.originalIndex - b.originalIndex;
+    }).map(item => item.rect);
+  }
+
   function context(targetWords, allLines) {
     if (!targetWords.length) return "";
     const target = targetWords[0];
@@ -84,7 +104,7 @@
     return pixels;
   }
 
-  const api = { lines, words, context, removeHighlight };
+  const api = { lines, words, context, orderHighlights, removeHighlight };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.OcrLayout = api;
 })(globalThis);

@@ -32,9 +32,11 @@ test('seven highlights keep their sentences across two columns', () => {
     highlights.push({x,y,width:180,height:20});
     return {paragraphs:[{lines:[{text,bbox,words:[{text:word,bbox,confidence:96}]}]}]};
   });
-  const actual = sandbox.api.buildResults({blocks}, highlights, []);
+  // OCR block order follows the left column before the right column.
+  const order = [0, 3, 4, 5, 1, 2, 6];
+  const actual = sandbox.api.buildResults({blocks: order.map(i => blocks[i])}, highlights, []);
   assert.deepEqual(Array.from(actual, item => [item.word, item.pos, item.context]),
-    entries.map(([word,pos,text]) => [word === 'realized' ? 'realize' : word,pos,text]));
+    order.map(i => entries[i]).map(([word,pos,text]) => [word === 'realized' ? 'realize' : word,pos,text]));
   assert.ok(actual.every(item => item.meaning && item.confidence >= 90));
 });
 
@@ -79,4 +81,29 @@ test('no spatially matching line returns no unrelated page text', () => {
   assert.equal(OcrLayout.context([{text:'word',bbox:{x:0,y:0,width:10,height:10}}], [
     {text:'Unrelated.',bbox:{x:300,y:0,width:100,height:10}}
   ]), '');
+});
+
+
+test('same-line highlights sort left to right despite unequal marker heights', () => {
+  const left = {x:10,y:55,width:50,height:20};
+  const right = {x:80,y:50,width:50,height:25};
+  const input = [right, left];
+  assert.deepEqual(OcrLayout.orderHighlights(input,
+    [{bbox:{x:0,y:55,width:200,height:20}}]), [left, right]);
+  assert.deepEqual(input, [right, left]);
+});
+
+test('single-column lines retain top-to-bottom reading order', () => {
+  const top = {x:100,y:0,width:30,height:20};
+  const bottom = {x:10,y:40,width:30,height:20};
+  assert.deepEqual(OcrLayout.orderHighlights([bottom, top], [
+    {bbox:{x:0,y:0,width:200,height:20}},
+    {bbox:{x:0,y:40,width:200,height:20}}
+  ]), [top, bottom]);
+});
+
+test('unmatched highlights remain available in stable spatial order', () => {
+  const a = {x:0,y:0,width:20,height:20};
+  const b = {x:0,y:40,width:20,height:20};
+  assert.deepEqual(OcrLayout.orderHighlights([b,a], []), [a,b]);
 });
